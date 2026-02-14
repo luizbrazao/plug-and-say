@@ -459,7 +459,9 @@ export default defineSchema({
     createdAt: v.float64(),
   })
     .index("by_departmentId", ["departmentId"])
-    .index("by_orgId", ["orgId"]),
+    .index("by_orgId", ["orgId"])
+    .index("by_department_type", ["departmentId", "type"])
+    .index("by_org_type", ["orgId", "type"]),
 
   /**
    * Reviews for agent templates (1..5 stars)

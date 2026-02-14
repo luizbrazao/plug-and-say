@@ -2,7 +2,11 @@
 
 import { mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { getAuthUserId } from "@convex-dev/auth/server";
+import { assertIntegrationAllowed } from "./plans";
+import {
+    requireAuthenticatedUser,
+    requireDepartmentOrgAdminMembership,
+} from "./lib/orgAuthorization";
 
 export const gmailUpsertConfigForDepartment = mutation({
     args: {
@@ -15,14 +19,20 @@ export const gmailUpsertConfigForDepartment = mutation({
         appReturnUrl: v.optional(v.string()), // ex: http://localhost:5173/settings/integrations
     },
     handler: async (ctx, args) => {
-        const userId = await getAuthUserId(ctx);
-        if (!userId) throw new Error("Unauthorized");
+        const userId = await requireAuthenticatedUser(ctx);
+        const { department } = await requireDepartmentOrgAdminMembership(
+            ctx,
+            userId,
+            args.departmentId
+        );
+        await assertIntegrationAllowed(ctx, department.orgId, "gmail");
 
         // Busca integração gmail do dept
         const existing = await ctx.db
             .query("integrations")
-            .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
-            .filter((q) => q.eq(q.field("type"), "gmail"))
+            .withIndex("by_department_type", (q) =>
+                q.eq("departmentId", args.departmentId).eq("type", "gmail")
+            )
             .unique();
 
         const safeName = args.name?.trim() || "Gmail";
@@ -43,6 +53,7 @@ export const gmailUpsertConfigForDepartment = mutation({
                 config,
                 authType: "oauth2",
                 oauthStatus: existing.oauthStatus ?? "not_connected",
+                orgId: department.orgId,
                 lastSyncAt: Date.now(),
                 lastError: "",
             });
@@ -51,7 +62,7 @@ export const gmailUpsertConfigForDepartment = mutation({
 
         const id = await ctx.db.insert("integrations", {
             departmentId: args.departmentId,
-            orgId: undefined,
+            orgId: department.orgId,
             name: safeName,
             type: "gmail",
             config,
@@ -71,13 +82,18 @@ export const gmailDisconnectForDepartment = mutation({
         departmentId: v.id("departments"),
     },
     handler: async (ctx, args) => {
-        const userId = await getAuthUserId(ctx);
-        if (!userId) throw new Error("Unauthorized");
+        const userId = await requireAuthenticatedUser(ctx);
+        const { department } = await requireDepartmentOrgAdminMembership(
+            ctx,
+            userId,
+            args.departmentId
+        );
 
         const existing = await ctx.db
             .query("integrations")
-            .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
-            .filter((q) => q.eq(q.field("type"), "gmail"))
+            .withIndex("by_department_type", (q) =>
+                q.eq("departmentId", args.departmentId).eq("type", "gmail")
+            )
             .unique();
 
         if (!existing) return { ok: true, disconnected: false };
@@ -96,6 +112,7 @@ export const gmailDisconnectForDepartment = mutation({
         await ctx.db.patch(existing._id, {
             config: cleaned,
             oauthStatus: "not_connected",
+            orgId: department.orgId,
             lastSyncAt: Date.now(),
             lastError: "",
         });

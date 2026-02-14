@@ -1,6 +1,7 @@
 // /convex/integrations.ts
 
 import {
+    type ActionCtx,
     action,
     internalMutation,
     internalQuery,
@@ -9,7 +10,17 @@ import {
 } from "./_generated/server";
 import { v } from "convex/values";
 import { api, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { assertIntegrationAllowed } from "./plans";
+import {
+    requireAuthenticatedUser,
+    requireDepartmentOrgAdminMembership,
+    requireDepartmentOrgMembership,
+    requireDepartmentWithOrg,
+    requireOrgAdminMembership,
+    requireOrgMembership,
+    type OrgRole,
+} from "./lib/orgAuthorization";
 
 // --- Types ---
 
@@ -26,6 +37,8 @@ type IntegrationType =
     | "dalle";
 
 type IntegrationConfig = Record<string, unknown>;
+
+const ORG_ADMIN_ROLES: ReadonlySet<OrgRole> = new Set(["owner", "admin"]);
 
 // --- Helper Functions ---
 
@@ -103,6 +116,23 @@ function validateIntegrationConfig(type: IntegrationType, config: unknown) {
     }
 }
 
+async function assertActionOrgAdmin(
+    ctx: ActionCtx,
+    orgId: Id<"organizations">
+): Promise<void> {
+    const userOrgs = (await ctx.runQuery(api.organizations.listForUser, {})) as Array<{
+        _id: Id<"organizations">;
+        role: OrgRole;
+    }>;
+    const org = userOrgs.find((row) => row._id === orgId);
+    if (!org) {
+        throw new Error("Access denied: not a member of this organization.");
+    }
+    if (!ORG_ADMIN_ROLES.has(org.role)) {
+        throw new Error("Access denied: admin or owner role required.");
+    }
+}
+
 // --- Public Queries ---
 
 /**
@@ -112,6 +142,9 @@ function validateIntegrationConfig(type: IntegrationType, config: unknown) {
 export const listByOrg = query({
     args: { orgId: v.id("organizations") },
     handler: async (ctx, args) => {
+        const userId = await requireAuthenticatedUser(ctx);
+        await requireOrgMembership(ctx, userId, args.orgId);
+
         const rows = await ctx.db
             .query("integrations")
             .withIndex("by_orgId", (q) => q.eq("orgId", args.orgId))
@@ -143,10 +176,14 @@ export const getByDepartmentType = query({
         ),
     },
     handler: async (ctx, args) => {
+        const userId = await requireAuthenticatedUser(ctx);
+        await requireDepartmentOrgMembership(ctx, userId, args.departmentId);
+
         return await ctx.db
             .query("integrations")
-            .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
-            .filter((q) => q.eq(q.field("type"), args.type))
+            .withIndex("by_department_type", (q) =>
+                q.eq("departmentId", args.departmentId).eq("type", args.type)
+            )
             .unique();
     },
 });
@@ -182,12 +219,24 @@ export const upsert = mutation({
     },
     handler: async (ctx, args) => {
         const type = args.type as IntegrationType;
+        const userId = await requireAuthenticatedUser(ctx);
 
         if (type === "telegram" && !args.departmentId) {
             throw new Error("Telegram integration must be scoped to a department.");
         }
 
-        await assertIntegrationAllowed(ctx, args.orgId, type);
+        let resolvedOrgId = args.orgId;
+        if (args.departmentId) {
+            const { department } = await requireDepartmentOrgAdminMembership(ctx, userId, args.departmentId);
+            if (department.orgId !== args.orgId) {
+                throw new Error("Department does not belong to the provided organization.");
+            }
+            resolvedOrgId = department.orgId;
+        } else {
+            await requireOrgAdminMembership(ctx, userId, args.orgId);
+        }
+
+        await assertIntegrationAllowed(ctx, resolvedOrgId, type);
         validateIntegrationConfig(type, args.config);
 
         let integration: any | null = null;
@@ -195,22 +244,30 @@ export const upsert = mutation({
         if (type === "telegram") {
             integration = await ctx.db
                 .query("integrations")
-                .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId!))
-                .filter((q) => q.eq(q.field("type"), "telegram"))
+                .withIndex("by_department_type", (q) =>
+                    q.eq("departmentId", args.departmentId!).eq("type", "telegram")
+                )
                 .unique();
         } else {
             // Para types globais, garantimos 1 por orgId+type
             integration = await ctx.db
                 .query("integrations")
-                .withIndex("by_orgId", (q) => q.eq("orgId", args.orgId))
-                .filter((q) => q.eq(q.field("type"), type))
+                .withIndex("by_org_type", (q) => q.eq("orgId", resolvedOrgId).eq("type", type))
                 .unique();
+            if (!integration && args.departmentId) {
+                integration = await ctx.db
+                    .query("integrations")
+                    .withIndex("by_department_type", (q) =>
+                        q.eq("departmentId", args.departmentId!).eq("type", type)
+                    )
+                    .unique();
+            }
         }
 
         const patchBase: Record<string, unknown> = {
             name: args.name,
             config: args.config,
-            orgId: args.orgId,
+            orgId: resolvedOrgId,
             authType: args.authType,
             oauthStatus: args.oauthStatus,
             lastSyncAt: args.lastSyncAt,
@@ -223,7 +280,7 @@ export const upsert = mutation({
         } else {
             await ctx.db.insert("integrations", {
                 departmentId: args.departmentId,
-                orgId: args.orgId,
+                orgId: resolvedOrgId,
                 name: args.name,
                 type,
                 config: args.config,
@@ -253,12 +310,42 @@ export const upsert = mutation({
 export const remove = mutation({
     args: { id: v.id("integrations") },
     handler: async (ctx, args) => {
+        const userId = await requireAuthenticatedUser(ctx);
+        const integration = await ctx.db.get(args.id);
+        if (!integration) throw new Error("Integration not found.");
+
+        let orgId = integration.orgId ?? undefined;
+        if (!orgId && integration.departmentId) {
+            const department = await requireDepartmentWithOrg(ctx, integration.departmentId);
+            orgId = department.orgId;
+            await ctx.db.patch(integration._id, { orgId });
+        }
+        if (!orgId) {
+            throw new Error("Integration is missing organization linkage.");
+        }
+
+        await requireOrgAdminMembership(ctx, userId, orgId);
         await ctx.db.delete(args.id);
         return true;
     },
 });
 
 // --- Internal Queries ---
+
+export const isUserOrgAdmin = internalQuery({
+    args: {
+        orgId: v.id("organizations"),
+        userId: v.id("users"),
+    },
+    handler: async (ctx, args) => {
+        const membership = await ctx.db
+            .query("orgMemberships")
+            .withIndex("by_userId_orgId", (q) => q.eq("userId", args.userId).eq("orgId", args.orgId))
+            .unique();
+        if (!membership) return false;
+        return membership.role === "owner" || membership.role === "admin";
+    },
+});
 
 /**
  * internal:integrations:getByType
@@ -283,8 +370,7 @@ export const getByType = internalQuery({
     handler: async (ctx, args) => {
         return await ctx.db
             .query("integrations")
-            .withIndex("by_orgId", (q) => q.eq("orgId", args.orgId))
-            .filter((q) => q.eq(q.field("type"), args.type))
+            .withIndex("by_org_type", (q) => q.eq("orgId", args.orgId).eq("type", args.type))
             .unique();
     },
 });
@@ -312,8 +398,9 @@ export const getByTypeForDepartment = internalQuery({
         if (args.type === "telegram") {
             return await ctx.db
                 .query("integrations")
-                .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
-                .filter((q) => q.eq(q.field("type"), "telegram"))
+                .withIndex("by_department_type", (q) =>
+                    q.eq("departmentId", args.departmentId).eq("type", "telegram")
+                )
                 .unique();
         }
 
@@ -323,23 +410,23 @@ export const getByTypeForDepartment = internalQuery({
         if (dept.orgId) {
             const byOrg = await ctx.db
                 .query("integrations")
-                .withIndex("by_orgId", (q) => q.eq("orgId", dept.orgId))
-                .filter((q) => q.eq(q.field("type"), args.type))
+                .withIndex("by_org_type", (q) => q.eq("orgId", dept.orgId).eq("type", args.type))
                 .unique();
             if (byOrg) return byOrg;
         }
 
         return await ctx.db
             .query("integrations")
-            .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
-            .filter((q) => q.eq(q.field("type"), args.type))
+            .withIndex("by_department_type", (q) =>
+                q.eq("departmentId", args.departmentId).eq("type", args.type)
+            )
             .unique();
     },
 });
 
 // --- Migrations ---
 
-export const migrateToOrg = mutation({
+export const migrateToOrg = internalMutation({
     args: {},
     handler: async (ctx) => {
         const integrations = await ctx.db.query("integrations").collect();
@@ -390,6 +477,7 @@ export const migrateToOrg = mutation({
 
 export const generateGmailAuthUrl = action({
     args: {
+        orgId: v.id("organizations"),
         departmentId: v.id("departments"),
         powers: v.array(v.union(v.literal("read"), v.literal("send"), v.literal("organize"))),
     },
@@ -397,10 +485,30 @@ export const generateGmailAuthUrl = action({
         ctx,
         args
     ): Promise<{ url: string; scopes: string[] }> => {
+        await assertActionOrgAdmin(ctx, args.orgId);
+        const department = await ctx.runQuery(api.departments.get, {
+            departmentId: args.departmentId,
+        });
+        if (!department) {
+            throw new Error("Department not found.");
+        }
+        if (!department.orgId) {
+            throw new Error("Department has no organization linked.");
+        }
+        if (department.orgId !== args.orgId) {
+            throw new Error("Department does not belong to the provided organization.");
+        }
+        const initiatedByUserId = await ctx.runQuery(api.organizations.currentUserId, {});
+        if (!initiatedByUserId) {
+            throw new Error("Unauthorized");
+        }
+
         // Delegate URL/scopes construction to the unified OAuth module.
         const response: any = await ctx.runAction(internal.tools.gmailOAuth.getAuthUrl, {
+            orgId: args.orgId,
             departmentId: args.departmentId,
             powers: args.powers,
+            initiatedByUserId,
         });
 
         if (!response?.ok || typeof response.url !== "string") {
@@ -441,8 +549,9 @@ export const patchConfigForDepartment = internalMutation({
     handler: async (ctx, args): Promise<{ ok: true }> => {
         const integration = await ctx.db
             .query("integrations")
-            .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
-            .filter((q) => q.eq(q.field("type"), args.type))
+            .withIndex("by_department_type", (q) =>
+                q.eq("departmentId", args.departmentId).eq("type", args.type)
+            )
             .unique();
 
         if (!integration) {
@@ -465,6 +574,12 @@ export const patchConfigForDepartment = internalMutation({
         }
         if (typeof args.oauthStatus === "string") {
             patchDoc.oauthStatus = args.oauthStatus;
+        }
+        if (!integration.orgId) {
+            const dept = await ctx.db.get(args.departmentId);
+            if (dept?.orgId) {
+                patchDoc.orgId = dept.orgId;
+            }
         }
 
         await ctx.db.patch(integration._id, patchDoc);

@@ -27,6 +27,7 @@ import type * as invites from "../invites.js";
 import type * as knowledge from "../knowledge.js";
 import type * as knowledgeNode from "../knowledgeNode.js";
 import type * as lib_deptContext from "../lib/deptContext.js";
+import type * as lib_orgAuthorization from "../lib/orgAuthorization.js";
 import type * as memory from "../memory.js";
 import type * as messages from "../messages.js";
 import type * as migrations from "../migrations.js";
@@ -85,6 +86,7 @@ declare const fullApi: ApiFromModules<{
   knowledge: typeof knowledge;
   knowledgeNode: typeof knowledgeNode;
   "lib/deptContext": typeof lib_deptContext;
+  "lib/orgAuthorization": typeof lib_orgAuthorization;
   memory: typeof memory;
   messages: typeof messages;
   migrations: typeof migrations;

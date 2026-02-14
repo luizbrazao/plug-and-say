@@ -1,3 +1,5 @@
+// /Users/luizbrazao/mission-control/mission-control/src/components/integrations/CredentialModal.tsx
+
 import { useEffect, useMemo, useState } from "react";
 import { useAction, useMutation } from "convex/react";
 import { api } from "../../../convex/_generated/api";
@@ -29,10 +31,21 @@ function isGmailPower(value: unknown): value is GmailOAuthPower {
     return value === "read" || value === "send" || value === "organize";
 }
 
-function getConvexSiteUrl() {
+/**
+ * VITE_CONVEX_URL normalmente é https://<deployment>.convex.cloud (client).
+ * Para OAuth redirect/callback em Convex HTTP actions, o domínio correto é .convex.site.
+ */
+function getConvexBaseUrlForOauthRedirect() {
     const raw = import.meta.env.VITE_CONVEX_URL as string | undefined;
     if (!raw) return "";
-    return raw.replace(/\/$/, "");
+
+    const base = raw.replace(/\/$/, "");
+
+    // Converte apenas quando for o padrão do client.
+    // Se você já estiver usando .convex.site (ou domínio custom), não mexe.
+    if (base.includes(".convex.cloud")) return base.replace(".convex.cloud", ".convex.site");
+
+    return base;
 }
 
 function titleForService(service: string) {
@@ -81,7 +94,7 @@ export function CredentialModal({ isOpen, service, orgId, departmentId, integrat
     const [error, setError] = useState<string | null>(null);
 
     const redirectUrl = useMemo(() => {
-        const base = getConvexSiteUrl();
+        const base = getConvexBaseUrlForOauthRedirect();
         return base ? `${base}/oauth/gmail/callback` : "Missing VITE_CONVEX_URL";
     }, []);
 
@@ -191,6 +204,7 @@ export function CredentialModal({ isOpen, service, orgId, departmentId, integrat
                     clientId: clientId.trim(),
                     clientSecret: clientSecret.trim(),
                     // Persist callback URL and power selection used in OAuth.
+                    // IMPORTANT: redirectUrl uses .convex.site when VITE_CONVEX_URL is .convex.cloud
                     redirectUri: redirectUrl,
                     redirectUrl,
                     powers: gmailPowers,
@@ -203,6 +217,7 @@ export function CredentialModal({ isOpen, service, orgId, departmentId, integrat
             } as any);
 
             const response = await generateGmailAuthUrl({
+                orgId,
                 departmentId,
                 powers: gmailPowers,
             });
@@ -309,148 +324,256 @@ export function CredentialModal({ isOpen, service, orgId, departmentId, integrat
                     />
                 ) : (
                     <>
-                <header className="px-5 py-4 border-b border-border-subtle flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                        <ServiceLogo service={service} />
-                        <div>
-                            <h2 className="text-lg font-bold tracking-tight">{titleForService(service)}</h2>
-                            <p className="text-xs text-text-secondary">Configure and connect your credential.</p>
-                        </div>
-                    </div>
-                    <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-black/5 text-text-secondary" aria-label="Close">
-                        ✕
-                    </button>
-                </header>
-
-                <div className="p-5 space-y-4">
-                    {service === "gmail" && (
-                        <>
-                            <div className={`rounded-xl border px-3 py-2 text-sm font-medium ${statusClass}`}>
-                                {isConnected ? "🟢 " : "⚪ "} {statusLabel}
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Client ID</label>
-                                <input value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="123...apps.googleusercontent.com" className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30" />
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Client Secret</label>
-                                <input type="password" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} placeholder="GOCSPX-..." className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30" />
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Redirect URL</label>
-                                <div className="flex gap-2">
-                                    <input value={redirectUrl} readOnly className="flex-1 rounded-xl border border-border-subtle bg-slate-50 px-3 py-2 text-xs font-mono text-slate-700" />
-                                    <button onClick={copyRedirectUrl} className="px-3 py-2 rounded-xl border border-border-subtle text-xs font-semibold hover:bg-black/5">Copy</button>
+                        <header className="px-5 py-4 border-b border-border-subtle flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <ServiceLogo service={service} />
+                                <div>
+                                    <h2 className="text-lg font-bold tracking-tight">{titleForService(service)}</h2>
+                                    <p className="text-xs text-text-secondary">Configure and connect your credential.</p>
                                 </div>
                             </div>
-                            <div className="space-y-2">
-                                <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Powers</label>
-                                <div className="grid gap-2">
-                                    {GMAIL_POWER_OPTIONS.map((power) => (
-                                        <label key={power.id} className="flex items-start gap-2 rounded-lg border border-border-subtle px-3 py-2 text-xs">
+                            <button
+                                onClick={onClose}
+                                className="w-8 h-8 rounded-lg hover:bg-black/5 text-text-secondary"
+                                aria-label="Close"
+                            >
+                                ✕
+                            </button>
+                        </header>
+
+                        <div className="p-5 space-y-4">
+                            {service === "gmail" && (
+                                <>
+                                    <div className={`rounded-xl border px-3 py-2 text-sm font-medium ${statusClass}`}>
+                                        {isConnected ? "🟢 " : "⚪ "} {statusLabel}
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Client ID</label>
+                                        <input
+                                            value={clientId}
+                                            onChange={(e) => setClientId(e.target.value)}
+                                            placeholder="123...apps.googleusercontent.com"
+                                            className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Client Secret</label>
+                                        <input
+                                            type="password"
+                                            value={clientSecret}
+                                            onChange={(e) => setClientSecret(e.target.value)}
+                                            placeholder="GOCSPX-..."
+                                            className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Redirect URL</label>
+                                        <div className="flex gap-2">
                                             <input
-                                                type="checkbox"
-                                                className="mt-0.5"
-                                                checked={gmailPowers.includes(power.id)}
-                                                onChange={(e) => {
-                                                    setGmailPowers((prev) => {
-                                                        if (e.target.checked) return Array.from(new Set([...prev, power.id]));
-                                                        return prev.filter((current) => current !== power.id);
-                                                    });
-                                                }}
+                                                value={redirectUrl}
+                                                readOnly
+                                                className="flex-1 rounded-xl border border-border-subtle bg-slate-50 px-3 py-2 text-xs font-mono text-slate-700"
                                             />
-                                            <span>
-                                                <span className="block font-semibold text-text-primary">{power.label}</span>
-                                                <span className="block text-text-secondary">{power.description}</span>
-                                            </span>
+                                            <button
+                                                onClick={copyRedirectUrl}
+                                                className="px-3 py-2 rounded-xl border border-border-subtle text-xs font-semibold hover:bg-black/5"
+                                            >
+                                                Copy
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Powers</label>
+                                        <div className="grid gap-2">
+                                            {GMAIL_POWER_OPTIONS.map((power) => (
+                                                <label
+                                                    key={power.id}
+                                                    className="flex items-start gap-2 rounded-lg border border-border-subtle px-3 py-2 text-xs"
+                                                >
+                                                    <input
+                                                        type="checkbox"
+                                                        className="mt-0.5"
+                                                        checked={gmailPowers.includes(power.id)}
+                                                        onChange={(e) => {
+                                                            setGmailPowers((prev) => {
+                                                                if (e.target.checked) return Array.from(new Set([...prev, power.id]));
+                                                                return prev.filter((current) => current !== power.id);
+                                                            });
+                                                        }}
+                                                    />
+                                                    <span>
+                                                        <span className="block font-semibold text-text-primary">{power.label}</span>
+                                                        <span className="block text-text-secondary">{power.description}</span>
+                                                    </span>
+                                                </label>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    {integration?.lastError && (
+                                        <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                                            {integration.lastError}
+                                        </div>
+                                    )}
+                                    <button
+                                        onClick={handleGoogleSignIn}
+                                        disabled={isSubmitting}
+                                        className="w-full rounded-xl bg-[#1a73e8] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#1768d1] disabled:opacity-50"
+                                    >
+                                        {isSubmitting ? "Connecting..." : "Sign in with Google"}
+                                    </button>
+                                </>
+                            )}
+
+                            {service === "notion" && (
+                                <>
+                                    <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900">
+                                        Important: You must "Invite" your integration to the specific Notion page you want the agents to access.
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">
+                                            Internal Integration Token
                                         </label>
-                                    ))}
+                                        <input
+                                            type="password"
+                                            value={notionToken}
+                                            onChange={(e) => setNotionToken(e.target.value)}
+                                            placeholder="secret_..."
+                                            className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">
+                                            Default Parent Page ID
+                                        </label>
+                                        <input
+                                            value={notionParentPageId}
+                                            onChange={(e) => setNotionParentPageId(e.target.value)}
+                                            placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                                            className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                                        />
+                                    </div>
+                                    <button
+                                        onClick={handleSaveNotion}
+                                        disabled={isSubmitting}
+                                        className="w-full rounded-xl bg-text-primary px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                                    >
+                                        {isSubmitting ? "Saving..." : "Save Credential"}
+                                    </button>
+                                </>
+                            )}
+
+                            {service === "resend" && (
+                                <>
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">API Key</label>
+                                        <input
+                                            type="password"
+                                            value={resendToken}
+                                            onChange={(e) => setResendToken(e.target.value)}
+                                            placeholder="re_..."
+                                            className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Default From Email</label>
+                                        <input
+                                            type="email"
+                                            value={resendFromEmail}
+                                            onChange={(e) => setResendFromEmail(e.target.value)}
+                                            placeholder="agent@yourdomain.com"
+                                            className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                                        />
+                                    </div>
+                                    <button
+                                        onClick={handleSaveResend}
+                                        disabled={isSubmitting}
+                                        className="w-full rounded-xl bg-text-primary px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                                    >
+                                        {isSubmitting ? "Saving..." : "Save Credential"}
+                                    </button>
+                                </>
+                            )}
+
+                            {service === "twitter" && (
+                                <>
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">API Key</label>
+                                        <input
+                                            type="password"
+                                            value={twitterApiKey}
+                                            onChange={(e) => setTwitterApiKey(e.target.value)}
+                                            placeholder="..."
+                                            className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">API Secret</label>
+                                        <input
+                                            type="password"
+                                            value={twitterApiSecret}
+                                            onChange={(e) => setTwitterApiSecret(e.target.value)}
+                                            placeholder="..."
+                                            className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Access Token</label>
+                                        <input
+                                            type="password"
+                                            value={twitterAccessToken}
+                                            onChange={(e) => setTwitterAccessToken(e.target.value)}
+                                            placeholder="..."
+                                            className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Access Secret</label>
+                                        <input
+                                            type="password"
+                                            value={twitterAccessSecret}
+                                            onChange={(e) => setTwitterAccessSecret(e.target.value)}
+                                            placeholder="..."
+                                            className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                                        />
+                                    </div>
+                                    <button
+                                        onClick={handleSaveTwitter}
+                                        disabled={isSubmitting}
+                                        className="w-full rounded-xl bg-text-primary px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                                    >
+                                        {isSubmitting ? "Saving..." : "Save Credential"}
+                                    </button>
+                                </>
+                            )}
+
+                            {GENERIC_API_KEY_SERVICES.has(service) && (
+                                <>
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">API Key</label>
+                                        <input
+                                            type="password"
+                                            value={genericApiKey}
+                                            onChange={(e) => setGenericApiKey(e.target.value)}
+                                            placeholder="Enter API key"
+                                            className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                                        />
+                                    </div>
+                                    <button
+                                        onClick={handleSaveGenericApiKey}
+                                        disabled={isSubmitting}
+                                        className="w-full rounded-xl bg-text-primary px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                                    >
+                                        {isSubmitting ? "Saving..." : "Save Credential"}
+                                    </button>
+                                </>
+                            )}
+
+                            {error && (
+                                <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                                    {error}
                                 </div>
-                            </div>
-                            {integration?.lastError && <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{integration.lastError}</div>}
-                            <button onClick={handleGoogleSignIn} disabled={isSubmitting} className="w-full rounded-xl bg-[#1a73e8] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#1768d1] disabled:opacity-50">
-                                {isSubmitting ? "Connecting..." : "Sign in with Google"}
-                            </button>
-                        </>
-                    )}
-
-                    {service === "notion" && (
-                        <>
-                            <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900">
-                                Important: You must "Invite" your integration to the specific Notion page you want the agents to access.
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Internal Integration Token</label>
-                                <input type="password" value={notionToken} onChange={(e) => setNotionToken(e.target.value)} placeholder="secret_..." className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30" />
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Default Parent Page ID</label>
-                                <input value={notionParentPageId} onChange={(e) => setNotionParentPageId(e.target.value)} placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30" />
-                            </div>
-                            <button onClick={handleSaveNotion} disabled={isSubmitting} className="w-full rounded-xl bg-text-primary px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50">
-                                {isSubmitting ? "Saving..." : "Save Credential"}
-                            </button>
-                        </>
-                    )}
-
-                    {service === "resend" && (
-                        <>
-                            <div className="space-y-1">
-                                <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">API Key</label>
-                                <input type="password" value={resendToken} onChange={(e) => setResendToken(e.target.value)} placeholder="re_..." className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30" />
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Default From Email</label>
-                                <input type="email" value={resendFromEmail} onChange={(e) => setResendFromEmail(e.target.value)} placeholder="agent@yourdomain.com" className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30" />
-                            </div>
-                            <button onClick={handleSaveResend} disabled={isSubmitting} className="w-full rounded-xl bg-text-primary px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50">
-                                {isSubmitting ? "Saving..." : "Save Credential"}
-                            </button>
-                        </>
-                    )}
-
-                    {service === "twitter" && (
-                        <>
-                            <div className="space-y-1">
-                                <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">API Key</label>
-                                <input type="password" value={twitterApiKey} onChange={(e) => setTwitterApiKey(e.target.value)} placeholder="..." className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30" />
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">API Secret</label>
-                                <input type="password" value={twitterApiSecret} onChange={(e) => setTwitterApiSecret(e.target.value)} placeholder="..." className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30" />
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Access Token</label>
-                                <input type="password" value={twitterAccessToken} onChange={(e) => setTwitterAccessToken(e.target.value)} placeholder="..." className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30" />
-                            </div>
-                            <div className="space-y-1">
-                                <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Access Secret</label>
-                                <input type="password" value={twitterAccessSecret} onChange={(e) => setTwitterAccessSecret(e.target.value)} placeholder="..." className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30" />
-                            </div>
-                            <button onClick={handleSaveTwitter} disabled={isSubmitting} className="w-full rounded-xl bg-text-primary px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50">
-                                {isSubmitting ? "Saving..." : "Save Credential"}
-                            </button>
-                        </>
-                    )}
-
-                    {GENERIC_API_KEY_SERVICES.has(service) && (
-                        <>
-                            <div className="space-y-1">
-                                <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">API Key</label>
-                                <input type="password" value={genericApiKey} onChange={(e) => setGenericApiKey(e.target.value)} placeholder="Enter API key" className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30" />
-                            </div>
-                            <button onClick={handleSaveGenericApiKey} disabled={isSubmitting} className="w-full rounded-xl bg-text-primary px-4 py-2.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50">
-                                {isSubmitting ? "Saving..." : "Save Credential"}
-                            </button>
-                        </>
-                    )}
-
-                    {error && (
-                        <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                            {error}
+                            )}
                         </div>
-                    )}
-                </div>
                     </>
                 )}
             </div>
