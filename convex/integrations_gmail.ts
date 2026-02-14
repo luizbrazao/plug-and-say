@@ -3,47 +3,55 @@
 import { mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { assertIntegrationAllowed } from "./plans";
+import type { Id } from "./_generated/dataModel";
+import type { MutationCtx } from "./_generated/server";
 import {
     requireAuthenticatedUser,
-    requireDepartmentOrgAdminMembership,
+    requireDepartmentWithOrg,
+    requireOrgAdminMembership,
 } from "./lib/orgAuthorization";
+
+async function assertDepartmentMatchesOrg(
+    ctx: MutationCtx,
+    departmentId: Id<"departments"> | undefined,
+    orgId: Id<"organizations">
+): Promise<void> {
+    if (!departmentId) return;
+    const department = await requireDepartmentWithOrg(ctx, departmentId);
+    if (department.orgId !== orgId) {
+        throw new Error("Department does not belong to the provided organization.");
+    }
+}
 
 export const gmailUpsertConfigForDepartment = mutation({
     args: {
-        departmentId: v.id("departments"),
+        orgId: v.id("organizations"),
+        departmentId: v.optional(v.id("departments")),
         name: v.optional(v.string()),
-
         clientId: v.string(),
         clientSecret: v.string(),
-        redirectUri: v.string(), // ex: https://ceaseless-lion-963.convex.site/oauth/gmail/callback
+        redirectUri: v.string(), // ex: https://<deployment>.convex.site/oauth/gmail/callback
         appReturnUrl: v.optional(v.string()), // ex: http://localhost:5173/settings/integrations
     },
     handler: async (ctx, args) => {
         const userId = await requireAuthenticatedUser(ctx);
-        const { department } = await requireDepartmentOrgAdminMembership(
-            ctx,
-            userId,
-            args.departmentId
-        );
-        await assertIntegrationAllowed(ctx, department.orgId, "gmail");
+        await requireOrgAdminMembership(ctx, userId, args.orgId);
+        await assertDepartmentMatchesOrg(ctx, args.departmentId, args.orgId);
+        await assertIntegrationAllowed(ctx, args.orgId, "gmail");
 
-        // Busca integração gmail do dept
         const existing = await ctx.db
             .query("integrations")
-            .withIndex("by_department_type", (q) =>
-                q.eq("departmentId", args.departmentId).eq("type", "gmail")
-            )
+            .withIndex("by_org_type", (q) => q.eq("orgId", args.orgId).eq("type", "gmail"))
             .unique();
 
         const safeName = args.name?.trim() || "Gmail";
-
         const config = {
             ...(existing?.config ?? {}),
             clientId: args.clientId.trim(),
             clientSecret: args.clientSecret.trim(),
             redirectUri: args.redirectUri.trim(),
             appReturnUrl: args.appReturnUrl?.trim() || "http://localhost:5173/settings/integrations",
-            // NÃO cria tokens aqui; tokens entram no callback depois do OAuth
+            oauthContextDepartmentId: args.departmentId ? String(args.departmentId) : undefined,
         };
 
         if (existing) {
@@ -53,7 +61,8 @@ export const gmailUpsertConfigForDepartment = mutation({
                 config,
                 authType: "oauth2",
                 oauthStatus: existing.oauthStatus ?? "not_connected",
-                orgId: department.orgId,
+                orgId: args.orgId,
+                departmentId: undefined,
                 lastSyncAt: Date.now(),
                 lastError: "",
             });
@@ -61,8 +70,8 @@ export const gmailUpsertConfigForDepartment = mutation({
         }
 
         const id = await ctx.db.insert("integrations", {
-            departmentId: args.departmentId,
-            orgId: department.orgId,
+            departmentId: undefined,
+            orgId: args.orgId,
             name: safeName,
             type: "gmail",
             config,
@@ -79,21 +88,17 @@ export const gmailUpsertConfigForDepartment = mutation({
 
 export const gmailDisconnectForDepartment = mutation({
     args: {
-        departmentId: v.id("departments"),
+        orgId: v.id("organizations"),
+        departmentId: v.optional(v.id("departments")),
     },
     handler: async (ctx, args) => {
         const userId = await requireAuthenticatedUser(ctx);
-        const { department } = await requireDepartmentOrgAdminMembership(
-            ctx,
-            userId,
-            args.departmentId
-        );
+        await requireOrgAdminMembership(ctx, userId, args.orgId);
+        await assertDepartmentMatchesOrg(ctx, args.departmentId, args.orgId);
 
         const existing = await ctx.db
             .query("integrations")
-            .withIndex("by_department_type", (q) =>
-                q.eq("departmentId", args.departmentId).eq("type", "gmail")
-            )
+            .withIndex("by_org_type", (q) => q.eq("orgId", args.orgId).eq("type", "gmail"))
             .unique();
 
         if (!existing) return { ok: true, disconnected: false };
@@ -107,12 +112,14 @@ export const gmailDisconnectForDepartment = mutation({
             scopes: undefined,
             powers: undefined,
             connectedAt: undefined,
+            oauthIntent: undefined,
         };
 
         await ctx.db.patch(existing._id, {
             config: cleaned,
             oauthStatus: "not_connected",
-            orgId: department.orgId,
+            orgId: args.orgId,
+            departmentId: undefined,
             lastSyncAt: Date.now(),
             lastError: "",
         });

@@ -75,7 +75,7 @@ function titleForService(service: string) {
 
 export function CredentialModal({ isOpen, service, orgId, departmentId, integration, onClose }: CredentialModalProps) {
     const upsertIntegration = useMutation(api.integrations.upsert);
-    const generateGmailAuthUrl = useAction((api as any).integrations.generateGmailAuthUrl);
+    const generateGmailAuthUrl = useAction(api.integrations.generateGmailAuthUrl);
 
     const [clientId, setClientId] = useState("");
     const [clientSecret, setClientSecret] = useState("");

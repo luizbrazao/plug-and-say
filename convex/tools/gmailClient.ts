@@ -1,4 +1,4 @@
-import { internal } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -45,8 +45,9 @@ function decodeJsonSafely(raw: string): any {
 
 async function markOauthError(ctx: any, departmentId: Id<"departments">, message: string) {
     try {
-        await ctx.runMutation(internal.integrations.patchConfigForDepartment, {
-            departmentId,
+        const orgId = await resolveOrgIdFromDepartment(ctx, departmentId);
+        await ctx.runMutation(internal.integrations.patchConfigForOrg, {
+            orgId,
             type: "gmail",
             patch: {},
             oauthStatus: "error",
@@ -55,6 +56,20 @@ async function markOauthError(ctx: any, departmentId: Id<"departments">, message
     } catch {
         // Do not mask the original OAuth/refresh error with a secondary patch error.
     }
+}
+
+async function resolveOrgIdFromDepartment(
+    ctx: any,
+    departmentId: Id<"departments">
+): Promise<Id<"organizations">> {
+    const department = await ctx.runQuery(api.departments.get, { departmentId });
+    if (!department) {
+        throw new Error("Department not found.");
+    }
+    if (!department.orgId) {
+        throw new Error("Department has no organization linked.");
+    }
+    return department.orgId;
 }
 
 async function refreshAccessToken(
@@ -104,8 +119,9 @@ async function refreshAccessToken(
         throw new Error(message);
     }
 
-    await ctx.runMutation(internal.integrations.patchConfigForDepartment, {
-        departmentId,
+    const orgId = await resolveOrgIdFromDepartment(ctx, departmentId);
+    await ctx.runMutation(internal.integrations.patchConfigForOrg, {
+        orgId,
         type: "gmail",
         patch: {
             accessToken,
@@ -128,14 +144,20 @@ export async function getGmailIntegrationConfig(
     powers: GmailPower[];
     scopes: string[];
 }> {
-    const integration: any = await ctx.runQuery(internal.integrations.getByTypeForDepartment, {
-        departmentId,
+    const orgId = await resolveOrgIdFromDepartment(ctx, departmentId);
+    const integration: any = await ctx.runQuery(internal.integrations.getByType, {
+        orgId,
         type: "gmail",
     });
 
     if (!integration) {
-        throw new Error("Gmail integration not configured for this department.");
+        throw new Error("Gmail integration not configured for this organization.");
     }
+    console.log("[gmailClient.getConfig] lookup", {
+        orgId: String(orgId),
+        departmentId: String(departmentId),
+        oauthStatus: integration?.oauthStatus ?? null,
+    });
 
     const configRaw = integration?.config ?? {};
     const cfg = (configRaw && typeof configRaw === "object" ? configRaw : {}) as GmailIntegrationConfig;

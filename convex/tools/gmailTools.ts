@@ -51,8 +51,21 @@ export const gmailGetCapabilities = internalAction({
         departmentId: v.id("departments"),
     },
     handler: async (ctx, args): Promise<GmailCapabilitiesResponse> => {
-        const integration: any = await ctx.runQuery(internal.integrations.getByTypeForDepartment, {
+        const department = await ctx.runQuery(api.departments.get, {
             departmentId: args.departmentId,
+        });
+        if (!department?.orgId) {
+            return {
+                ok: true,
+                powers: [],
+                scopes: [],
+                hasRefreshToken: false,
+                tokenExpiresAt: null,
+                oauthStatus: null,
+            };
+        }
+        const integration: any = await ctx.runQuery(internal.integrations.getByType, {
+            orgId: department.orgId,
             type: "gmail",
         });
 
@@ -98,6 +111,9 @@ export const gmailSendEmail = internalAction({
         threadId: v.optional(v.string()),
     },
     handler: async (ctx, args): Promise<unknown> => {
+        console.log("[gmailTools.gmailSendEmail] start", {
+            departmentId: String(args.departmentId),
+        });
         return await ctx.runAction((api as any).tools.gmailApi.sendMessage, args);
     },
 });

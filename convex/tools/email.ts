@@ -4,7 +4,7 @@ import { internal } from "../_generated/api";
 
 /**
  * internal:tools:email:sendEmail
- * Sends an email using the department's configured RESEND_API_KEY.
+ * Sends an email using Resend when configured, otherwise falls back to org-level Gmail OAuth.
  */
 export const sendEmail = internalAction({
     args: {
@@ -14,40 +14,65 @@ export const sendEmail = internalAction({
         body: v.string(),
     },
     handler: async (ctx, args): Promise<any> => {
-        // 1. Fetch Resend integration
-        const integration: any = await ctx.runQuery(internal.integrations.getByTypeForDepartment, {
+        const resendIntegration: any = await ctx.runQuery(internal.integrations.getByTypeForDepartment, {
             departmentId: args.departmentId,
             type: "resend",
         });
 
-        if (!integration || !integration.config || !integration.config.token) {
-            throw new Error("Resend (Email) integration not configured for this department.");
-        }
-        const fromEmail = integration.config.fromEmail || "onboarding@resend.dev";
-
-        console.log(`[TOOL: send_email] Sending to ${args.to}: ${args.subject}`);
-
-        // Call Resend API
-        const response: Response = await fetch("https://api.resend.com/emails", {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${integration.config.token}`,
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-                from: `PlugandSay <${fromEmail}>`,
+        const resendToken =
+            typeof resendIntegration?.config?.token === "string" &&
+            resendIntegration.config.token.trim().length > 0
+                ? resendIntegration.config.token.trim()
+                : "";
+        if (resendToken) {
+            const fromEmail = resendIntegration.config.fromEmail || "onboarding@resend.dev";
+            console.log("[tools.email.sendEmail] provider=resend", {
+                departmentId: String(args.departmentId),
                 to: args.to,
                 subject: args.subject,
-                html: `<div style="font-family: sans-serif;">${args.body}</div>`,
-            }),
-        });
+            });
 
-        if (!response.ok) {
-            const err: string = await response.text();
-            throw new Error(`Resend API Error: ${err}`);
+            const response: Response = await fetch("https://api.resend.com/emails", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${resendToken}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    from: `PlugandSay <${fromEmail}>`,
+                    to: args.to,
+                    subject: args.subject,
+                    html: `<div style="font-family: sans-serif;">${args.body}</div>`,
+                }),
+            });
+
+            if (!response.ok) {
+                const err: string = await response.text();
+                throw new Error(`Resend API Error: ${err}`);
+            }
+
+            return { ok: true, provider: "resend", sentAt: Date.now() };
         }
 
-        return { ok: true, sentAt: Date.now() };
+        const gmailIntegration: any = await ctx.runQuery(internal.integrations.getByTypeForDepartment, {
+            departmentId: args.departmentId,
+            type: "gmail",
+        });
+        console.log("[tools.email.sendEmail] provider=gmail candidate", {
+            departmentId: String(args.departmentId),
+            found: Boolean(gmailIntegration),
+            oauthStatus: gmailIntegration?.oauthStatus ?? null,
+        });
+        if (gmailIntegration?.oauthStatus === "connected") {
+            return await ctx.runAction(internal.tools.gmailTools.gmailSendEmail, {
+                departmentId: args.departmentId,
+                to: args.to,
+                subject: args.subject,
+                text: args.body,
+            });
+        }
+
+        throw new Error("No email integration available. Configure Resend API key or connect Gmail OAuth.");
     },
 });
 

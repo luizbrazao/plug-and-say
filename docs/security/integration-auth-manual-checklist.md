@@ -48,3 +48,9 @@
 3. Complete callback.
 4. Expected: callback fails with authorization error and no token persisted.
 
+## Org-level policy notes
+- Org-level integrations are resolved by `departmentId -> department.orgId -> integrations.by_org_type`.
+- `telegram` remains department-scoped; all other providers are org-scoped.
+- AuthZ policy:
+  - Read: org member.
+  - Write/connect/disconnect: org admin or owner.

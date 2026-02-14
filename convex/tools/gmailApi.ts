@@ -350,6 +350,12 @@ export const sendMessage = action({
         threadId: v.optional(v.string()),
     },
     handler: async (ctx, args) => {
+        console.log("[gmailApi.sendMessage] start", {
+            departmentId: String(args.departmentId),
+            hasText: typeof args.text === "string" && args.text.trim().length > 0,
+            hasHtml: typeof args.html === "string" && args.html.trim().length > 0,
+            to: args.to,
+        });
         const { powers } = await getGmailIntegrationConfig(ctx, args.departmentId);
         requirePower(powers, "send");
 

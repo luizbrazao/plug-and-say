@@ -2,6 +2,7 @@
 
 import {
     type ActionCtx,
+    type MutationCtx,
     action,
     internalMutation,
     internalQuery,
@@ -10,7 +11,7 @@ import {
 } from "./_generated/server";
 import { v } from "convex/values";
 import { api, internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { assertIntegrationAllowed } from "./plans";
 import {
     requireAuthenticatedUser,
@@ -116,6 +117,10 @@ function validateIntegrationConfig(type: IntegrationType, config: unknown) {
     }
 }
 
+function isDepartmentScopedIntegration(type: IntegrationType): boolean {
+    return type === "telegram";
+}
+
 async function assertActionOrgAdmin(
     ctx: ActionCtx,
     orgId: Id<"organizations">
@@ -177,7 +182,25 @@ export const getByDepartmentType = query({
     },
     handler: async (ctx, args) => {
         const userId = await requireAuthenticatedUser(ctx);
-        await requireDepartmentOrgMembership(ctx, userId, args.departmentId);
+        const { department } = await requireDepartmentOrgMembership(ctx, userId, args.departmentId);
+
+        if (args.type === "telegram") {
+            return await ctx.db
+                .query("integrations")
+                .withIndex("by_department_type", (q) =>
+                    q.eq("departmentId", args.departmentId).eq("type", "telegram")
+                )
+                .unique();
+        }
+
+        const orgScoped = await ctx.db
+            .query("integrations")
+            .withIndex("by_org_type", (q) =>
+                q.eq("orgId", department.orgId).eq("type", args.type)
+            )
+            .unique();
+        if (orgScoped) return orgScoped;
+        if (args.type === "gmail") return null;
 
         return await ctx.db
             .query("integrations")
@@ -221,17 +244,19 @@ export const upsert = mutation({
         const type = args.type as IntegrationType;
         const userId = await requireAuthenticatedUser(ctx);
 
-        if (type === "telegram" && !args.departmentId) {
+        if (isDepartmentScopedIntegration(type) && !args.departmentId) {
             throw new Error("Telegram integration must be scoped to a department.");
         }
 
         let resolvedOrgId = args.orgId;
+        let resolvedDepartmentId: Id<"departments"> | undefined;
         if (args.departmentId) {
             const { department } = await requireDepartmentOrgAdminMembership(ctx, userId, args.departmentId);
             if (department.orgId !== args.orgId) {
                 throw new Error("Department does not belong to the provided organization.");
             }
             resolvedOrgId = department.orgId;
+            resolvedDepartmentId = args.departmentId;
         } else {
             await requireOrgAdminMembership(ctx, userId, args.orgId);
         }
@@ -239,26 +264,25 @@ export const upsert = mutation({
         await assertIntegrationAllowed(ctx, resolvedOrgId, type);
         validateIntegrationConfig(type, args.config);
 
-        let integration: any | null = null;
+        let integration: Doc<"integrations"> | null = null;
 
-        if (type === "telegram") {
+        if (isDepartmentScopedIntegration(type)) {
             integration = await ctx.db
                 .query("integrations")
                 .withIndex("by_department_type", (q) =>
-                    q.eq("departmentId", args.departmentId!).eq("type", "telegram")
+                    q.eq("departmentId", resolvedDepartmentId!).eq("type", "telegram")
                 )
                 .unique();
         } else {
-            // Para types globais, garantimos 1 por orgId+type
             integration = await ctx.db
                 .query("integrations")
                 .withIndex("by_org_type", (q) => q.eq("orgId", resolvedOrgId).eq("type", type))
                 .unique();
-            if (!integration && args.departmentId) {
+            if (!integration && resolvedDepartmentId) {
                 integration = await ctx.db
                     .query("integrations")
                     .withIndex("by_department_type", (q) =>
-                        q.eq("departmentId", args.departmentId!).eq("type", type)
+                        q.eq("departmentId", resolvedDepartmentId).eq("type", type)
                     )
                     .unique();
             }
@@ -272,14 +296,14 @@ export const upsert = mutation({
             oauthStatus: args.oauthStatus,
             lastSyncAt: args.lastSyncAt,
             lastError: args.lastError,
-            ...(args.departmentId ? { departmentId: args.departmentId } : {}),
+            ...(isDepartmentScopedIntegration(type) ? { departmentId: resolvedDepartmentId } : { departmentId: undefined }),
         };
 
         if (integration) {
             await ctx.db.patch(integration._id, patchBase);
         } else {
             await ctx.db.insert("integrations", {
-                departmentId: args.departmentId,
+                departmentId: isDepartmentScopedIntegration(type) ? resolvedDepartmentId : undefined,
                 orgId: resolvedOrgId,
                 name: args.name,
                 type,
@@ -293,11 +317,13 @@ export const upsert = mutation({
         }
 
         // Auto-register Telegram webhook if token provided
-        if (type === "telegram" && (args.config as any)?.token && args.departmentId) {
-            const dept = await ctx.db.get(args.departmentId);
+        if (type === "telegram" && resolvedDepartmentId) {
+            const token = getNonEmptyString(args.config as IntegrationConfig, "token");
+            if (!token) return true;
+            const dept = await ctx.db.get(resolvedDepartmentId);
             if (dept) {
                 await ctx.scheduler.runAfter(0, api.telegram.registerWebhook, {
-                    token: (args.config as any).token,
+                    token,
                     deptSlug: dept.slug,
                 });
             }
@@ -414,6 +440,7 @@ export const getByTypeForDepartment = internalQuery({
                 .unique();
             if (byOrg) return byOrg;
         }
+        if (args.type === "gmail") return null;
 
         return await ctx.db
             .query("integrations")
@@ -478,7 +505,7 @@ export const migrateToOrg = internalMutation({
 export const generateGmailAuthUrl = action({
     args: {
         orgId: v.id("organizations"),
-        departmentId: v.id("departments"),
+        departmentId: v.optional(v.id("departments")),
         powers: v.array(v.union(v.literal("read"), v.literal("send"), v.literal("organize"))),
     },
     handler: async (
@@ -486,17 +513,19 @@ export const generateGmailAuthUrl = action({
         args
     ): Promise<{ url: string; scopes: string[] }> => {
         await assertActionOrgAdmin(ctx, args.orgId);
-        const department = await ctx.runQuery(api.departments.get, {
-            departmentId: args.departmentId,
-        });
-        if (!department) {
-            throw new Error("Department not found.");
-        }
-        if (!department.orgId) {
-            throw new Error("Department has no organization linked.");
-        }
-        if (department.orgId !== args.orgId) {
-            throw new Error("Department does not belong to the provided organization.");
+        if (args.departmentId) {
+            const department = await ctx.runQuery(api.departments.get, {
+                departmentId: args.departmentId,
+            });
+            if (!department) {
+                throw new Error("Department not found.");
+            }
+            if (!department.orgId) {
+                throw new Error("Department has no organization linked.");
+            }
+            if (department.orgId !== args.orgId) {
+                throw new Error("Department does not belong to the provided organization.");
+            }
         }
         const initiatedByUserId = await ctx.runQuery(api.organizations.currentUserId, {});
         if (!initiatedByUserId) {
@@ -547,6 +576,18 @@ export const patchConfigForDepartment = internalMutation({
         lastError: v.optional(v.string()),
     },
     handler: async (ctx, args): Promise<{ ok: true }> => {
+        if (args.type !== "telegram") {
+            const department = await requireDepartmentWithOrg(ctx, args.departmentId);
+            return await patchConfigForOrgHandler(ctx, {
+                orgId: department.orgId,
+                type: args.type,
+                patch: args.patch,
+                authType: args.authType,
+                oauthStatus: args.oauthStatus,
+                lastError: args.lastError,
+            });
+        }
+
         const integration = await ctx.db
             .query("integrations")
             .withIndex("by_department_type", (q) =>
@@ -585,6 +626,84 @@ export const patchConfigForDepartment = internalMutation({
         await ctx.db.patch(integration._id, patchDoc);
 
         return { ok: true };
+    },
+});
+
+async function patchConfigForOrgHandler(
+    ctx: MutationCtx,
+    args: {
+        orgId: Id<"organizations">;
+        type: IntegrationType;
+        patch: unknown;
+        authType?: string;
+        oauthStatus?: string;
+        lastError?: string;
+    }
+): Promise<{ ok: true }> {
+    if (args.type === "telegram") {
+        throw new Error("Telegram integration must be patched with patchConfigForDepartment.");
+    }
+
+    const integration = await ctx.db
+        .query("integrations")
+        .withIndex("by_org_type", (q) => q.eq("orgId", args.orgId).eq("type", args.type))
+        .unique();
+    if (!integration) {
+        throw new Error(`Integration ${args.type} not found for organization.`);
+    }
+
+    const mergedConfig = {
+        ...(integration.config ?? {}),
+        ...(args.patch ?? {}),
+    };
+
+    const patchDoc: Record<string, unknown> = {
+        config: mergedConfig,
+        orgId: args.orgId,
+        departmentId: undefined,
+        lastSyncAt: Date.now(),
+        lastError: typeof args.lastError === "string" ? args.lastError : "",
+    };
+
+    if (typeof args.authType === "string") {
+        patchDoc.authType = args.authType;
+    }
+    if (typeof args.oauthStatus === "string") {
+        patchDoc.oauthStatus = args.oauthStatus;
+    }
+
+    await ctx.db.patch(integration._id, patchDoc);
+    return { ok: true };
+}
+
+export const patchConfigForOrg = internalMutation({
+    args: {
+        orgId: v.id("organizations"),
+        type: v.union(
+            v.literal("openai"),
+            v.literal("anthropic"),
+            v.literal("gmail"),
+            v.literal("tavily"),
+            v.literal("resend"),
+            v.literal("github"),
+            v.literal("notion"),
+            v.literal("twitter"),
+            v.literal("dalle")
+        ),
+        patch: v.any(),
+        authType: v.optional(v.string()),
+        oauthStatus: v.optional(v.string()),
+        lastError: v.optional(v.string()),
+    },
+    handler: async (ctx, args): Promise<{ ok: true }> => {
+        return await patchConfigForOrgHandler(ctx, args as {
+            orgId: Id<"organizations">;
+            type: IntegrationType;
+            patch: unknown;
+            authType?: string;
+            oauthStatus?: string;
+            lastError?: string;
+        });
     },
 });
 

@@ -1,7 +1,7 @@
 // convex/tools/gmailOAuth.ts
 import { internalAction, httpAction } from "../_generated/server";
 import { v } from "convex/values";
-import { internal } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 
 type GmailPower = "read" | "send" | "organize";
@@ -104,24 +104,36 @@ function randomHex(bytesLen = 16): string {
 export const getAuthUrl = internalAction({
     args: {
         orgId: v.id("organizations"),
-        departmentId: v.id("departments"),
+        departmentId: v.optional(v.id("departments")),
         powers: v.array(v.union(v.literal("read"), v.literal("send"), v.literal("organize"))),
         initiatedByUserId: v.id("users"),
     },
     handler: async (ctx, args) => {
-        const integration: any = await ctx.runQuery(internal.integrations.getByTypeForDepartment, {
-            departmentId: args.departmentId,
+        if (args.departmentId) {
+            const department = await ctx.runQuery(api.departments.get, {
+                departmentId: args.departmentId,
+            });
+            if (!department) {
+                throw new Error("Department not found.");
+            }
+            if (String(department.orgId ?? "") !== String(args.orgId)) {
+                throw new Error("Department does not belong to the provided organization.");
+            }
+        }
+
+        const integration: any = await ctx.runQuery(internal.integrations.getByType, {
+            orgId: args.orgId,
             type: "gmail",
         });
         if (!integration) {
-            throw new Error("Gmail integration is not configured for this department.");
+            throw new Error("Gmail integration is not configured for this organization.");
         }
-        if (!integration.orgId) {
-            throw new Error("Gmail integration is missing organization linkage.");
-        }
-        if (integration.orgId !== args.orgId) {
-            throw new Error("Gmail integration org mismatch for this department.");
-        }
+        console.log("[gmailOAuth.getAuthUrl] org lookup", {
+            orgId: String(args.orgId),
+            departmentId: args.departmentId ? String(args.departmentId) : null,
+            hasIntegration: Boolean(integration),
+            oauthStatus: integration?.oauthStatus ?? null,
+        });
 
         const cfg = integration?.config ?? {};
         const clientId = cfg.clientId as string | undefined;
@@ -148,7 +160,7 @@ export const getAuthUrl = internalAction({
         const state = await signState(
             {
                 orgId: String(args.orgId),
-                departmentId: String(args.departmentId),
+                departmentId: args.departmentId ? String(args.departmentId) : undefined,
                 powers: args.powers,
                 nonce,
                 ts: issuedAt,
@@ -156,14 +168,14 @@ export const getAuthUrl = internalAction({
             stateSecret
         );
 
-        await ctx.runMutation(internal.integrations.patchConfigForDepartment, {
-            departmentId: args.departmentId,
+        await ctx.runMutation(internal.integrations.patchConfigForOrg, {
+            orgId: args.orgId,
             type: "gmail",
             patch: {
                 oauthIntent: {
                     nonce,
                     orgId: String(args.orgId),
-                    departmentId: String(args.departmentId),
+                    departmentId: args.departmentId ? String(args.departmentId) : undefined,
                     initiatedByUserId: String(args.initiatedByUserId),
                     issuedAt,
                     expiresAt,
@@ -209,7 +221,7 @@ export const callback = httpAction(async (ctx, req) => {
     if (!stateSecret) return new Response("Server missing GMAIL_STATE_SECRET", { status: 500 });
 
     const decoded = await verifyState(state, stateSecret);
-    if (!decoded?.departmentId || !decoded?.orgId || !decoded?.nonce) {
+    if (!decoded?.orgId || !decoded?.nonce) {
         return new Response("Invalid state", { status: 400 });
     }
     if (typeof decoded.ts !== "number" || Date.now() - decoded.ts > 10 * 60 * 1000) {
@@ -217,12 +229,32 @@ export const callback = httpAction(async (ctx, req) => {
     }
 
     const orgId = String(decoded.orgId) as Id<"organizations">;
-    const departmentId = String(decoded.departmentId) as Id<"departments">;
+    const departmentId =
+        typeof decoded.departmentId === "string" ? (String(decoded.departmentId) as Id<"departments">) : undefined;
     const powers = (decoded.powers ?? []) as GmailPower[];
 
-    const integration: any = await ctx.runQuery(internal.integrations.getByTypeForDepartment, {
-        departmentId,
+    if (departmentId) {
+        const department = await ctx.runQuery(api.departments.get, { departmentId });
+        if (!department) {
+            return new Response("Department not found for OAuth context", { status: 400 });
+        }
+        if (String(department.orgId ?? "") !== String(orgId)) {
+            return new Response("OAuth state department/org mismatch", { status: 400 });
+        }
+    }
+
+    const integration: any = await ctx.runQuery(internal.integrations.getByType, {
+        orgId,
         type: "gmail",
+    });
+    if (!integration) {
+        return new Response("Gmail integration not found for organization", { status: 404 });
+    }
+    console.log("[gmailOAuth.callback] org lookup", {
+        orgId: String(orgId),
+        departmentId: departmentId ? String(departmentId) : null,
+        hasIntegration: Boolean(integration),
+        oauthStatus: integration?.oauthStatus ?? null,
     });
 
     const cfg = integration?.config ?? {};
@@ -235,12 +267,13 @@ export const callback = httpAction(async (ctx, req) => {
         expiresAt?: number;
         usedAt?: number;
     };
+    const expectedDepartmentId = departmentId ? String(departmentId) : undefined;
     const intentValid =
         intent &&
         typeof intent.nonce === "string" &&
         intent.nonce === String(decoded.nonce) &&
         intent.orgId === String(orgId) &&
-        intent.departmentId === String(departmentId) &&
+        (intent.departmentId ?? undefined) === expectedDepartmentId &&
         typeof intent.initiatedByUserId === "string" &&
         (!intent.expiresAt || Date.now() <= intent.expiresAt) &&
         !intent.usedAt;
@@ -282,8 +315,8 @@ export const callback = httpAction(async (ctx, req) => {
 
     const tokenJson: any = await tokenRes.json();
     if (!tokenRes.ok) {
-        await ctx.runMutation(internal.integrations.patchConfigForDepartment, {
-            departmentId,
+        await ctx.runMutation(internal.integrations.patchConfigForOrg, {
+            orgId,
             type: "gmail",
             patch: {
                 oauthIntent: undefined,
@@ -302,8 +335,8 @@ export const callback = httpAction(async (ctx, req) => {
 
     if (!accessToken) return new Response("No access_token returned", { status: 400 });
 
-    await ctx.runMutation(internal.integrations.patchConfigForDepartment, {
-        departmentId,
+    await ctx.runMutation(internal.integrations.patchConfigForOrg, {
+        orgId,
         type: "gmail",
         patch: {
             powers,

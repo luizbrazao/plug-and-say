@@ -376,8 +376,32 @@ async function executeTool(
     toolCall: ToolCall,
     allowedTools?: string[]
 ): Promise<any> {
+    const permissionAliases: Record<string, string[]> = {
+        gmail_send_email: ["send_email"],
+        send_email: ["gmail_send_email"],
+    };
+    const aliasMatches =
+        permissionAliases[toolCall.name]?.some((alias) => allowedTools?.includes(alias)) ?? false;
+    const isToolAllowed =
+        !allowedTools || allowedTools.includes(toolCall.name) || aliasMatches;
+
+    console.log("[brain.executeTool] attempting", {
+        toolName: toolCall.name,
+        departmentId: String(departmentId),
+        taskId: String(taskId),
+        hasAllowedTools: Array.isArray(allowedTools),
+        allowedTools: allowedTools ?? null,
+        aliasMatches,
+    });
+
     // 1. Enforce Permissions
-    if (allowedTools && !allowedTools.includes(toolCall.name)) {
+    if (!isToolAllowed) {
+        console.warn("[brain.executeTool] denied by allowedTools", {
+            toolName: toolCall.name,
+            departmentId: String(departmentId),
+            taskId: String(taskId),
+            allowedTools: allowedTools ?? null,
+        });
         throw new Error(`Permission Denied: Agent is not allowed to use tool '${toolCall.name}'.`);
     }
 
@@ -897,6 +921,14 @@ export const think = internalAction({
         const effectiveAllowedTools = isSquadLead
             ? context.agent.allowedTools
             : Array.from(new Set([...(context.agent.allowedTools ?? []), "update_task_status"]));
+        console.log("[brain.think] tool policy", {
+            agentSessionKey: args.agentSessionKey,
+            agentName: context.agent.name,
+            departmentId: String(args.departmentId),
+            taskId: String(args.taskId),
+            isSquadLead,
+            effectiveAllowedTools: effectiveAllowedTools ?? null,
+        });
 
             const systemPrompt = `You are ${context.agent.name}, acting as ${context.agent.role}.\n` +
                 `Department Context: ${context.department.name}\n` +
