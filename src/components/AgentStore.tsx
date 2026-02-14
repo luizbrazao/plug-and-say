@@ -156,11 +156,10 @@ const AgentStore: React.FC = () => {
 
     const handleHire = async (templateId: any, name: string, capabilities?: string[]) => {
         if (!canHireTemplate(name, capabilities)) return;
-        const sessionKey = `agent:${name.toLowerCase().replace(/[^a-z0-9]/g, "-")}:${Date.now()}`;
 
         try {
             setHiringTemplateId(String(templateId));
-            await deployTemplate({ templateId, sessionKey });
+            await deployTemplate({ templateId });
             alert(t("agentStore.hireSuccess"));
         } catch (err: unknown) {
             if (openUpgradeModalFromError(err)) return;

@@ -2,6 +2,8 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { checkLimit } from "./plans";
+import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 
 function toSafePublicTemplate(template: any) {
     return {
@@ -396,38 +398,38 @@ export const listPublic = query({
 export const createAgentFromTemplate = mutation({
     args: {
         templateId: v.id("agentTemplates"),
-        sessionKey: v.string(),
     },
-    handler: async (ctx, args) => {
+    handler: async (ctx, args): Promise<{ ok: true; alreadyExists: boolean; agentId: Id<"agents"> }> => {
         const template = await ctx.db.get(args.templateId);
         if (!template || !template.departmentId) {
             throw new Error("Template not found or invalid");
         }
 
-        // Check if agent already exists in this dept
-        const existing = await ctx.db
+        const department = await ctx.db.get(template.departmentId);
+        if (!department) {
+            throw new Error("Department not found.");
+        }
+        if (!department.orgId) {
+            throw new Error("Department has no organization linked.");
+        }
+        const existingByTemplate = await ctx.db
             .query("agents")
-            .withIndex("by_dept_sessionKey", (q) =>
-                q.eq("departmentId", template.departmentId).eq("sessionKey", args.sessionKey)
+            .withIndex("by_department_template", (q) =>
+                q.eq("departmentId", template.departmentId!).eq("templateId", template._id)
             )
             .unique();
-
-        if (existing) {
-            return { ok: true, alreadyExists: true, agentId: existing._id };
+        if (!existingByTemplate) {
+            await checkLimit(ctx, department.orgId, "agents_per_department", {
+                departmentId: template.departmentId,
+            });
         }
 
-        const agentId = await ctx.db.insert("agents", {
+        const result = (await ctx.runMutation(internal.agents.upsertFromTemplateForDepartment, {
             departmentId: template.departmentId,
-            sessionKey: args.sessionKey,
-            name: template.name,
-            avatar: template.avatar,
-            role: template.role,
-            description: template.description ?? `${template.role} specialist.`,
-            status: "idle",
-            lastSeenAt: Date.now(),
-        });
+            templateId: template._id,
+        })) as { ok: true; agentId: Id<"agents">; created: boolean; dedupedLegacy: boolean };
 
-        return { ok: true, alreadyExists: false, agentId };
+        return { ok: true, alreadyExists: !result.created, agentId: result.agentId };
     },
 });
 
@@ -439,7 +441,7 @@ export const installPublicTemplate = mutation({
         templateId: v.id("agentTemplates"),
         targetDepartmentId: v.id("departments"),
     },
-    handler: async (ctx, args) => {
+    handler: async (ctx, args): Promise<{ ok: true; alreadyExists: boolean; agentId: Id<"agents"> }> => {
         const userId = await getAuthUserId(ctx);
         if (!userId) throw new Error("Unauthorized");
 
@@ -451,9 +453,6 @@ export const installPublicTemplate = mutation({
         const targetDept = await ctx.db.get("departments", args.targetDepartmentId);
         if (!targetDept) throw new Error("Target department not found.");
         if (!targetDept.orgId) throw new Error("Department has no organization linked.");
-        await checkLimit(ctx, targetDept.orgId, "agents_per_department", {
-            departmentId: args.targetDepartmentId,
-        });
 
         const deptMembership = await ctx.db
             .query("deptMemberships")
@@ -479,38 +478,30 @@ export const installPublicTemplate = mutation({
             throw new Error("Access denied: you are not a member of the target department.");
         }
 
-        const existingAgents = await ctx.db
+        const existingByTemplate = await ctx.db
             .query("agents")
-            .withIndex("by_departmentId", (q) => q.eq("departmentId", args.targetDepartmentId))
-            .collect();
-        const duplicate = existingAgents.find(
-            (agent) => agent.name.toLowerCase() === template.name.toLowerCase()
-        );
-        if (duplicate) {
-            return { ok: true, alreadyExists: true, agentId: duplicate._id };
+            .withIndex("by_department_template", (q) =>
+                q.eq("departmentId", args.targetDepartmentId).eq("templateId", template._id)
+            )
+            .unique();
+        if (!existingByTemplate) {
+            await checkLimit(ctx, targetDept.orgId, "agents_per_department", {
+                departmentId: args.targetDepartmentId,
+            });
         }
 
-        const normalizedName = template.name.toLowerCase().replace(/\s+/g, "-");
-        const sessionKey = `agent:${normalizedName}:${Date.now()}`;
-
-        const agentId = await ctx.db.insert("agents", {
+        const result = (await ctx.runMutation(internal.agents.upsertFromTemplateForDepartment, {
             departmentId: args.targetDepartmentId,
-            sessionKey,
-            name: template.name,
-            avatar: template.avatar,
-            role: template.role,
-            description: template.description ?? `${template.role} specialist.`,
-            status: "idle",
-            lastSeenAt: Date.now(),
-            systemPrompt: template.systemPrompt,
-            allowedTools: template.capabilities,
-        });
+            templateId: template._id,
+        })) as { ok: true; agentId: Id<"agents">; created: boolean; dedupedLegacy: boolean };
 
-        await ctx.db.patch("agentTemplates", args.templateId, {
-            installCount: (template.installCount ?? 0n) + 1n,
-        });
+        if (result.created) {
+            await ctx.db.patch("agentTemplates", args.templateId, {
+                installCount: (template.installCount ?? 0n) + 1n,
+            });
+        }
 
-        return { ok: true, agentId };
+        return { ok: true, alreadyExists: !result.created, agentId: result.agentId };
     },
 });
 
@@ -523,7 +514,7 @@ export const installPublicTemplateSystem = internalMutation({
         templateId: v.id("agentTemplates"),
         targetDepartmentId: v.id("departments"),
     },
-    handler: async (ctx, args) => {
+    handler: async (ctx, args): Promise<{ ok: true; alreadyExists: boolean; agentId: Id<"agents"> }> => {
         const template = await ctx.db.get("agentTemplates", args.templateId);
         if (!template || !template.isPublic) {
             throw new Error("Template is not public or not found.");
@@ -532,38 +523,18 @@ export const installPublicTemplateSystem = internalMutation({
         const targetDept = await ctx.db.get("departments", args.targetDepartmentId);
         if (!targetDept) throw new Error("Target department not found.");
 
-        const existingAgents = await ctx.db
-            .query("agents")
-            .withIndex("by_departmentId", (q) => q.eq("departmentId", args.targetDepartmentId))
-            .collect();
-        const duplicate = existingAgents.find(
-            (agent) => agent.name.toLowerCase() === template.name.toLowerCase()
-        );
-        if (duplicate) {
-            return { ok: true, alreadyExists: true, agentId: duplicate._id };
+        const result = (await ctx.runMutation(internal.agents.upsertFromTemplateForDepartment, {
+            departmentId: args.targetDepartmentId,
+            templateId: template._id,
+        })) as { ok: true; agentId: Id<"agents">; created: boolean; dedupedLegacy: boolean };
+
+        if (result.created) {
+            await ctx.db.patch("agentTemplates", args.templateId, {
+                installCount: (template.installCount ?? 0n) + 1n,
+            });
         }
 
-        const normalizedName = template.name.toLowerCase().replace(/\s+/g, "-");
-        const sessionKey = `agent:${normalizedName}:${Date.now()}`;
-
-        const agentId = await ctx.db.insert("agents", {
-            departmentId: args.targetDepartmentId,
-            sessionKey,
-            name: template.name,
-            avatar: template.avatar,
-            role: template.role,
-            description: template.description ?? `${template.role} specialist.`,
-            status: "idle",
-            lastSeenAt: Date.now(),
-            systemPrompt: template.systemPrompt,
-            allowedTools: template.capabilities,
-        });
-
-        await ctx.db.patch("agentTemplates", args.templateId, {
-            installCount: (template.installCount ?? 0n) + 1n,
-        });
-
-        return { ok: true, alreadyExists: false, agentId };
+        return { ok: true, alreadyExists: !result.created, agentId: result.agentId };
     },
 });
 

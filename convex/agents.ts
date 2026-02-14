@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { query, mutation } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { checkLimit } from "./plans";
 
@@ -13,6 +13,38 @@ const CAPABILITY_TOOL_MAP: Record<string, string[]> = {
     wong: ["update_notion_page", "create_notion_database_item", "update_task_status"],
     quill: ["post_to_x", "update_task_status"],
 };
+
+function normalizeAgentSlug(value: string): string {
+    return value
+        .trim()
+        .toLowerCase()
+        .replace(/^@+/, "")
+        .replace(/^agent:/, "")
+        .split(":")[0]
+        .replace(/[_\s]+/g, "-")
+        .replace(/[^a-z0-9-]/g, "")
+        .replace(/-+/g, "-")
+        .replace(/^-+|-+$/g, "");
+}
+
+function slugFromSessionKey(sessionKey: string): string {
+    if (!sessionKey.toLowerCase().startsWith("agent:")) {
+        return normalizeAgentSlug(sessionKey);
+    }
+    return normalizeAgentSlug(sessionKey.slice("agent:".length));
+}
+
+function buildTemplateSessionKey(name: string, departmentSlug: string): string {
+    const slug = normalizeAgentSlug(name);
+    if (slug === "jarvis") {
+        const safeDeptSlug = normalizeAgentSlug(departmentSlug) || "main";
+        return `agent:jarvis:${safeDeptSlug}`;
+    }
+    if (slug === "friday") {
+        return "agent:main:main";
+    }
+    return `agent:${slug}:main`;
+}
 
 /**
  * Agents table shape (from schema.ts):
@@ -110,6 +142,100 @@ export const listByStatus = query({
     },
 });
 
+export const upsertFromTemplateForDepartment = internalMutation({
+    args: {
+        departmentId: v.id("departments"),
+        templateId: v.id("agentTemplates"),
+    },
+    handler: async (ctx, args) => {
+        const template = await ctx.db.get(args.templateId);
+        if (!template) {
+            throw new Error("Template not found.");
+        }
+        if (template.departmentId && template.departmentId !== args.departmentId) {
+            throw new Error("Template does not belong to the provided department.");
+        }
+
+        const department = await ctx.db.get(args.departmentId);
+        if (!department) {
+            throw new Error("Department not found.");
+        }
+
+        const slug = normalizeAgentSlug(template.name);
+        const sessionKey = buildTemplateSessionKey(template.name, department.slug ?? "main");
+
+        const byTemplate = await ctx.db
+            .query("agents")
+            .withIndex("by_department_template", (q) =>
+                q.eq("departmentId", args.departmentId).eq("templateId", args.templateId)
+            )
+            .unique();
+        if (byTemplate) {
+            await ctx.db.patch(byTemplate._id, {
+                templateId: template._id,
+                slug,
+                name: template.name,
+                avatar: template.avatar,
+                role: template.role,
+                description: template.description ?? `${template.role} specialist.`,
+                systemPrompt: template.systemPrompt,
+                allowedTools: template.capabilities ?? [],
+                lastSeenAt: Date.now(),
+            });
+            return { ok: true, agentId: byTemplate._id, created: false, dedupedLegacy: false };
+        }
+
+        const deptAgents = await ctx.db
+            .query("agents")
+            .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
+            .collect();
+
+        const legacy = deptAgents.find((agent) => {
+            if (agent.templateId && String(agent.templateId) === String(args.templateId)) {
+                return true;
+            }
+            const existingSlug =
+                normalizeAgentSlug(agent.slug ?? "") ||
+                normalizeAgentSlug(agent.name) ||
+                slugFromSessionKey(agent.sessionKey);
+            return existingSlug === slug;
+        });
+
+        if (legacy) {
+            await ctx.db.patch(legacy._id, {
+                templateId: template._id,
+                slug,
+                name: template.name,
+                avatar: template.avatar,
+                role: template.role,
+                description: template.description ?? `${template.role} specialist.`,
+                systemPrompt: template.systemPrompt,
+                allowedTools: template.capabilities ?? [],
+                sessionKey: legacy.sessionKey || sessionKey,
+                lastSeenAt: Date.now(),
+            });
+            return { ok: true, agentId: legacy._id, created: false, dedupedLegacy: true };
+        }
+
+        const agentId = await ctx.db.insert("agents", {
+            departmentId: args.departmentId,
+            templateId: template._id,
+            slug,
+            name: template.name,
+            avatar: template.avatar,
+            role: template.role,
+            description: template.description ?? `${template.role} specialist.`,
+            sessionKey,
+            status: "idle",
+            lastSeenAt: Date.now(),
+            systemPrompt: template.systemPrompt,
+            allowedTools: template.capabilities ?? [],
+        });
+
+        return { ok: true, agentId, created: true, dedupedLegacy: false };
+    },
+});
+
 /**
  * Upsert an agent by sessionKey.
  * - If exists: patch provided fields
@@ -128,16 +254,17 @@ export const upsert = mutation({
         lastSeenAt: v.optional(v.number()),
     },
     handler: async (ctx, args) => {
-        const existing = await ctx.db
+        const agent = await ctx.db
             .query("agents")
-            .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
-            .collect();
-
-        const agent = existing.find(a => a.sessionKey === args.sessionKey);
+            .withIndex("by_dept_sessionKey", (q) =>
+                q.eq("departmentId", args.departmentId).eq("sessionKey", args.sessionKey)
+            )
+            .unique();
 
         if (agent) {
             await ctx.db.patch(agent._id, {
                 ...(args.name !== undefined ? { name: args.name } : {}),
+                ...(args.name !== undefined ? { slug: normalizeAgentSlug(args.name) } : {}),
                 ...(args.role !== undefined ? { role: args.role } : {}),
                 ...(args.status !== undefined ? { status: args.status } : {}),
                 ...(args.currentTaskId !== undefined
@@ -152,6 +279,7 @@ export const upsert = mutation({
         return await ctx.db.insert("agents", {
             departmentId: args.departmentId,
             name: args.name ?? "Unnamed",
+            slug: normalizeAgentSlug(args.name ?? args.sessionKey),
             role: args.role ?? "Unassigned",
             description: `${args.role ?? "General"} specialist agent.`,
             sessionKey: args.sessionKey,
@@ -247,12 +375,12 @@ export const heartbeat = mutation({
             departmentId = bySession.departmentId;
         }
 
-        const existing = await ctx.db
+        const agent = await ctx.db
             .query("agents")
-            .withIndex("by_departmentId", (q) => q.eq("departmentId", departmentId))
-            .collect();
-
-        const agent = existing.find(a => a.sessionKey === args.sessionKey);
+            .withIndex("by_dept_sessionKey", (q) =>
+                q.eq("departmentId", departmentId).eq("sessionKey", args.sessionKey)
+            )
+            .unique();
 
         if (!agent) {
             // Autocreate minimal agent on first heartbeat
@@ -260,6 +388,7 @@ export const heartbeat = mutation({
                 departmentId,
                 sessionKey: args.sessionKey,
                 name: args.sessionKey.split(":").pop() ?? "Agent",
+                slug: normalizeAgentSlug(args.sessionKey),
                 role: "Specialist",
                 description: "General specialist agent ready to help.",
                 status: args.status ?? "active",
@@ -300,17 +429,18 @@ export const seedRoster = mutation({
         let updated = 0;
 
         for (const r of roster) {
-            const existing = await ctx.db
+            const agent = await ctx.db
                 .query("agents")
-                .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
-                .collect();
-
-            const agent = existing.find(a => a.sessionKey === r.sessionKey);
+                .withIndex("by_dept_sessionKey", (q) =>
+                    q.eq("departmentId", args.departmentId).eq("sessionKey", r.sessionKey)
+                )
+                .unique();
 
             if (!agent) {
                 await ctx.db.insert("agents", {
                     departmentId: args.departmentId,
                     ...r,
+                    slug: normalizeAgentSlug(r.name),
                     description: `${r.role} focused agent for mission support.`,
                     status: "idle",
                     lastSeenAt: Date.now(),
@@ -321,6 +451,7 @@ export const seedRoster = mutation({
             } else {
                 await ctx.db.patch(agent._id, {
                     name: r.name,
+                    slug: normalizeAgentSlug(r.name),
                     role: r.role,
                     allowedTools: CAPABILITY_TOOL_MAP[r.name.toLowerCase()] ?? agent.allowedTools,
                 });
@@ -377,6 +508,7 @@ export const alignSquadCapabilities = mutation({
                 await ctx.db.insert("agents", {
                     departmentId: args.departmentId,
                     name: entry.name,
+                    slug: normalizeAgentSlug(entry.name),
                     role: entry.role,
                     description: `${entry.role} focused specialist.`,
                     sessionKey: entry.sessionKey,
@@ -390,6 +522,7 @@ export const alignSquadCapabilities = mutation({
             }
 
             await ctx.db.patch(existing._id, {
+                slug: normalizeAgentSlug(entry.name),
                 allowedTools,
                 role: existing.role || entry.role,
                 lastSeenAt: now,
@@ -438,26 +571,12 @@ export const createCustom = mutation({
             departmentId: args.departmentId,
         });
 
-        // Generate a session key strictly based on name
-        const normalizedName = name.toLowerCase().replace(/\s+/g, '-');
-        const sessionKey = `agent:${normalizedName}:${Date.now()}`;
+        const slug = normalizeAgentSlug(name);
+        const sessionKey = `agent:${slug}:${Date.now()}`;
         const now = Date.now();
         const capabilities = args.allowedTools ?? [];
 
-        const agentId = await ctx.db.insert("agents", {
-            departmentId: args.departmentId,
-            name,
-            avatar: args.avatar,
-            role,
-            description,
-            sessionKey,
-            status: "active",
-            lastSeenAt: now,
-            systemPrompt: args.systemPrompt,
-            allowedTools: capabilities,
-        });
-
-        await ctx.db.insert("agentTemplates", {
+        const templateId = await ctx.db.insert("agentTemplates", {
             departmentId: args.departmentId,
             name,
             avatar: args.avatar,
@@ -475,7 +594,294 @@ export const createCustom = mutation({
             orgId: department.orgId,
         });
 
+        const agentId = await ctx.db.insert("agents", {
+            departmentId: args.departmentId,
+            templateId,
+            slug,
+            name,
+            avatar: args.avatar,
+            role,
+            description,
+            sessionKey,
+            status: "active",
+            lastSeenAt: now,
+            systemPrompt: args.systemPrompt,
+            allowedTools: capabilities,
+        });
+
         return agentId;
+    },
+});
+
+export const dedupeByDepartmentKey = internalMutation({
+    args: {
+        departmentId: v.optional(v.id("departments")),
+        dryRun: v.optional(v.boolean()),
+    },
+    handler: async (ctx, args) => {
+        const dryRun = args.dryRun ?? true;
+
+        const agents = args.departmentId
+            ? await ctx.db
+                .query("agents")
+                .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
+                .collect()
+            : await ctx.db.query("agents").collect();
+
+        const tasks = args.departmentId
+            ? await ctx.db
+                .query("tasks")
+                .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
+                .collect()
+            : await ctx.db.query("tasks").collect();
+        const messages = args.departmentId
+            ? await ctx.db
+                .query("messages")
+                .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
+                .collect()
+            : await ctx.db.query("messages").collect();
+        const threadReads = args.departmentId
+            ? await ctx.db
+                .query("thread_reads")
+                .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
+                .collect()
+            : await ctx.db.query("thread_reads").collect();
+        const activities = args.departmentId
+            ? await ctx.db
+                .query("activities")
+                .withIndex("by_department_createdAt", (q) => q.eq("departmentId", args.departmentId))
+                .collect()
+            : await ctx.db.query("activities").collect();
+        const notifications = args.departmentId
+            ? await ctx.db
+                .query("notifications")
+                .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
+                .collect()
+            : await ctx.db.query("notifications").collect();
+        const threadSubscriptionsRaw = await ctx.db.query("thread_subscriptions").collect();
+        const threadSubscriptions = args.departmentId
+            ? threadSubscriptionsRaw.filter((row) => row.departmentId === args.departmentId)
+            : threadSubscriptionsRaw;
+        const executorRunsRaw = await ctx.db.query("executor_runs").collect();
+        const executorRuns = args.departmentId
+            ? executorRunsRaw.filter((row) => row.departmentId === args.departmentId)
+            : executorRunsRaw;
+        const documentsRaw = await ctx.db.query("documents").collect();
+        const documents = args.departmentId
+            ? documentsRaw.filter((row) => row.departmentId === args.departmentId)
+            : documentsRaw;
+        const templatesRaw = await ctx.db.query("agentTemplates").collect();
+        const templates = args.departmentId
+            ? templatesRaw.filter(
+                (template) => template.departmentId === args.departmentId || template.departmentId === undefined
+            )
+            : templatesRaw;
+
+        const localTemplateByDeptSlug = new Map<string, (typeof templates)[number]>();
+        const publicTemplateBySlug = new Map<string, Array<(typeof templates)[number]>>();
+        for (const template of templates) {
+            const slug = normalizeAgentSlug(template.name);
+            if (!slug) continue;
+            if (template.departmentId) {
+                localTemplateByDeptSlug.set(`${String(template.departmentId)}::${slug}`, template);
+                continue;
+            }
+            const existing = publicTemplateBySlug.get(slug);
+            if (existing) {
+                existing.push(template);
+            } else {
+                publicTemplateBySlug.set(slug, [template]);
+            }
+        }
+
+        const templateIdOverride = new Map<(typeof agents)[number]["_id"], (typeof templates)[number]["_id"]>();
+        let templateBackfilled = 0;
+        for (const agent of agents) {
+            if (!agent.departmentId || agent.templateId) continue;
+            const slug = normalizeAgentSlug(agent.slug ?? agent.name ?? agent.sessionKey);
+            if (!slug) continue;
+            const local = localTemplateByDeptSlug.get(`${String(agent.departmentId)}::${slug}`);
+            const publicCandidates = publicTemplateBySlug.get(slug) ?? [];
+            const selectedTemplate = local ?? (publicCandidates.length === 1 ? publicCandidates[0] : null);
+            if (!selectedTemplate) continue;
+
+            templateIdOverride.set(agent._id, selectedTemplate._id);
+            if (!dryRun) {
+                await ctx.db.patch(agent._id, { templateId: selectedTemplate._id });
+            }
+            templateBackfilled += 1;
+        }
+
+        const refCountBySession = new Map<string, number>();
+        const bump = (sessionKey: string | undefined) => {
+            if (!sessionKey) return;
+            refCountBySession.set(sessionKey, (refCountBySession.get(sessionKey) ?? 0) + 1);
+        };
+
+        for (const task of tasks) {
+            bump(task.createdBySessionKey);
+            for (const sessionKey of task.assigneeSessionKeys ?? []) bump(sessionKey);
+        }
+        for (const message of messages) bump(message.fromSessionKey);
+        for (const threadRead of threadReads) bump(threadRead.readerSessionKey);
+        for (const activity of activities) bump(activity.sessionKey);
+        for (const notification of notifications) bump(notification.mentionedSessionKey);
+        for (const subscription of threadSubscriptions) bump(subscription.sessionKey);
+        for (const run of executorRuns) bump(run.executorSessionKey);
+        for (const document of documents) bump(document.createdBySessionKey);
+
+        const groups = new Map<string, typeof agents>();
+        for (const agent of agents) {
+            if (!agent.departmentId) continue;
+            const effectiveTemplateId = agent.templateId ?? templateIdOverride.get(agent._id);
+            const key = effectiveTemplateId
+                ? `${String(agent.departmentId)}::template::${String(effectiveTemplateId)}`
+                : `${String(agent.departmentId)}::slug::${normalizeAgentSlug(agent.slug ?? agent.name ?? agent.sessionKey)}`;
+            const existing = groups.get(key);
+            if (existing) {
+                existing.push(agent);
+            } else {
+                groups.set(key, [agent]);
+            }
+        }
+
+        const rewiredRows = {
+            tasks: 0,
+            messages: 0,
+            threadReads: 0,
+            activities: 0,
+            notifications: 0,
+            threadSubscriptions: 0,
+            executorRuns: 0,
+            documents: 0,
+        };
+
+        const rewriteSessionKey = async (from: string, to: string) => {
+            if (from === to) return;
+
+            for (const task of tasks) {
+                const nextAssignees = (task.assigneeSessionKeys ?? []).map((sessionKey) =>
+                    sessionKey === from ? to : sessionKey
+                );
+                const dedupedAssignees = Array.from(new Set(nextAssignees));
+                const assigneesChanged =
+                    dedupedAssignees.length !== (task.assigneeSessionKeys ?? []).length ||
+                    dedupedAssignees.some((sessionKey, index) => sessionKey !== (task.assigneeSessionKeys ?? [])[index]);
+                const creatorChanged = task.createdBySessionKey === from;
+                if (!assigneesChanged && !creatorChanged) continue;
+                if (!dryRun) {
+                    await ctx.db.patch(task._id, {
+                        ...(assigneesChanged ? { assigneeSessionKeys: dedupedAssignees } : {}),
+                        ...(creatorChanged ? { createdBySessionKey: to } : {}),
+                    });
+                }
+                if (assigneesChanged) task.assigneeSessionKeys = dedupedAssignees;
+                if (creatorChanged) task.createdBySessionKey = to;
+                rewiredRows.tasks += 1;
+            }
+
+            for (const message of messages) {
+                if (message.fromSessionKey !== from) continue;
+                if (!dryRun) await ctx.db.patch(message._id, { fromSessionKey: to });
+                message.fromSessionKey = to;
+                rewiredRows.messages += 1;
+            }
+
+            for (const threadRead of threadReads) {
+                if (threadRead.readerSessionKey !== from) continue;
+                if (!dryRun) await ctx.db.patch(threadRead._id, { readerSessionKey: to });
+                threadRead.readerSessionKey = to;
+                rewiredRows.threadReads += 1;
+            }
+
+            for (const activity of activities) {
+                if (activity.sessionKey !== from) continue;
+                if (!dryRun) await ctx.db.patch(activity._id, { sessionKey: to });
+                activity.sessionKey = to;
+                rewiredRows.activities += 1;
+            }
+
+            for (const notification of notifications) {
+                if (notification.mentionedSessionKey !== from) continue;
+                if (!dryRun) await ctx.db.patch(notification._id, { mentionedSessionKey: to });
+                notification.mentionedSessionKey = to;
+                rewiredRows.notifications += 1;
+            }
+
+            for (const subscription of threadSubscriptions) {
+                if (subscription.sessionKey !== from) continue;
+                if (!dryRun) await ctx.db.patch(subscription._id, { sessionKey: to });
+                subscription.sessionKey = to;
+                rewiredRows.threadSubscriptions += 1;
+            }
+
+            for (const run of executorRuns) {
+                if (run.executorSessionKey !== from) continue;
+                if (!dryRun) await ctx.db.patch(run._id, { executorSessionKey: to });
+                run.executorSessionKey = to;
+                rewiredRows.executorRuns += 1;
+            }
+
+            for (const document of documents) {
+                if (document.createdBySessionKey !== from) continue;
+                if (!dryRun) await ctx.db.patch(document._id, { createdBySessionKey: to });
+                document.createdBySessionKey = to;
+                rewiredRows.documents += 1;
+            }
+        };
+
+        let duplicateGroups = 0;
+        let duplicateRows = 0;
+        let deleted = 0;
+
+        for (const group of groups.values()) {
+            if (group.length <= 1) continue;
+            duplicateGroups += 1;
+
+            const sorted = [...group].sort((a, b) => {
+                const refA = refCountBySession.get(a.sessionKey) ?? 0;
+                const refB = refCountBySession.get(b.sessionKey) ?? 0;
+                if (refA !== refB) return refB - refA;
+                const lastSeenA = a.lastSeenAt ?? 0;
+                const lastSeenB = b.lastSeenAt ?? 0;
+                if (lastSeenA !== lastSeenB) return lastSeenB - lastSeenA;
+                return b._creationTime - a._creationTime;
+            });
+
+            const keeper = sorted[0];
+            let keeperTemplateId = keeper.templateId ?? templateIdOverride.get(keeper._id);
+            let keeperSlug = keeper.slug;
+            for (const duplicate of sorted.slice(1)) {
+                duplicateRows += 1;
+                await rewriteSessionKey(duplicate.sessionKey, keeper.sessionKey);
+
+                if (!dryRun) {
+                    const duplicateTemplateId =
+                        duplicate.templateId ?? templateIdOverride.get(duplicate._id);
+                    if (!keeperTemplateId && duplicateTemplateId) {
+                        await ctx.db.patch(keeper._id, { templateId: duplicateTemplateId });
+                        keeperTemplateId = duplicateTemplateId;
+                    }
+                    if (!keeperSlug && duplicate.slug) {
+                        await ctx.db.patch(keeper._id, { slug: duplicate.slug });
+                        keeperSlug = duplicate.slug;
+                    }
+                    await ctx.db.delete(duplicate._id);
+                    deleted += 1;
+                }
+            }
+        }
+
+        return {
+            ok: true,
+            dryRun,
+            totalAgents: agents.length,
+            templateBackfilled,
+            duplicateGroups,
+            duplicateRows,
+            deleted,
+            rewiredRows,
+        };
     },
 });
 

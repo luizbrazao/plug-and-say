@@ -55,6 +55,36 @@ export const delegateTask = internalAction({
     handler: async (ctx, args): Promise<any> => {
         const normalizeAssignee = (value: string) =>
             value.trim().replace(/^@+/, "").toLowerCase();
+        const toAssigneeSlug = (value: string) => {
+            const normalized = normalizeAssignee(value);
+            const withoutPrefix = normalized.startsWith("agent:")
+                ? normalized.slice("agent:".length)
+                : normalized;
+            const base = withoutPrefix.split(":")[0] ?? "";
+            return base
+                .replace(/[_\s]+/g, "-")
+                .replace(/[^a-z0-9-]/g, "")
+                .replace(/-+/g, "-")
+                .replace(/^-+|-+$/g, "");
+        };
+        const matchesAssignee = (
+            requested: string,
+            candidate: { name?: string; slug?: string; sessionKey?: string }
+        ) => {
+            const normalizedRequested = normalizeAssignee(requested);
+            const requestedSlug = toAssigneeSlug(requested);
+            const candidateSession = normalizeAssignee(candidate.sessionKey ?? "");
+            const candidateSlug =
+                toAssigneeSlug(candidate.slug ?? "") ||
+                toAssigneeSlug(candidate.name ?? "") ||
+                toAssigneeSlug(candidateSession);
+
+            if (candidateSession === normalizedRequested) return true;
+            if (normalizedRequested.startsWith("agent:") && requestedSlug) {
+                if (candidateSession.startsWith(`agent:${requestedSlug}:`)) return true;
+            }
+            return requestedSlug.length > 0 && candidateSlug === requestedSlug;
+        };
 
         const title = args.title.trim();
         const rawDescription = args.description.trim();
@@ -68,20 +98,30 @@ export const delegateTask = internalAction({
             throw new Error("delegate_task requires at least one assignee.");
         }
 
-        const resolveAssignees = (pool: any[]) => {
-            const matched = requestedAssignees
-                .map((name) =>
-                    pool.find(
-                        (a) =>
-                            a.name?.toLowerCase() === normalizeAssignee(name) ||
-                            a.sessionKey?.toLowerCase() === normalizeAssignee(name)
-                    )
+        const resolveAssignees = (pool: Array<{ name?: string; slug?: string; sessionKey?: string }>) => {
+            const matched: Array<{ name?: string; slug?: string; sessionKey?: string }> = [];
+            const unresolved: string[] = [];
+            for (const requested of requestedAssignees) {
+                const found = pool.find((candidate) => matchesAssignee(requested, candidate));
+                if (found) {
+                    matched.push(found);
+                } else {
+                    unresolved.push(requested);
+                }
+            }
+            const names = Array.from(
+                new Set(
+                    matched
+                        .map((a) => a.name)
+                        .filter((value): value is string => typeof value === "string" && value.length > 0)
                 )
-                .filter(Boolean);
-            const names = Array.from(new Set(matched.map((a) => a.name)));
-            const sessions = Array.from(new Set(matched.map((a) => a.sessionKey)));
-            const unresolved = requestedAssignees.filter(
-                (name) => !names.some((resolved) => resolved.toLowerCase() === normalizeAssignee(name))
+            );
+            const sessions = Array.from(
+                new Set(
+                    matched
+                        .map((a) => a.sessionKey)
+                        .filter((value): value is string => typeof value === "string" && value.length > 0)
+                )
             );
             return { matched, names, sessions, unresolved };
         };
@@ -93,6 +133,13 @@ export const delegateTask = internalAction({
         let { names: resolvedNames, sessions: resolvedSessionKeys, unresolved: unresolvedNames } =
             resolveAssignees(agents);
 
+        console.log("[delegation] resolve:start", {
+            departmentId: args.departmentId,
+            requestedAssignees,
+            resolvedSessionKeys,
+            unresolvedNames,
+        });
+
         if (unresolvedNames.length > 0) {
             const deptTemplates: any[] = await ctx.runQuery(api.agentTemplates.listByDept, {
                 departmentId: args.departmentId,
@@ -102,25 +149,36 @@ export const delegateTask = internalAction({
             });
 
             for (const unresolved of unresolvedNames) {
-                const target = normalizeAssignee(unresolved);
+                const target = toAssigneeSlug(unresolved);
+                if (!target) continue;
                 const localTemplate = deptTemplates.find(
-                    (t) => t.name?.toLowerCase() === target
+                    (t) => toAssigneeSlug(String(t.name ?? "")) === target
                 );
                 if (localTemplate?._id) {
-                    await ctx.runMutation(api.agentTemplates.createAgentFromTemplate, {
+                    const upserted = await ctx.runMutation(internal.agents.upsertFromTemplateForDepartment, {
+                        departmentId: args.departmentId,
                         templateId: localTemplate._id,
-                        sessionKey: `agent:${target}:${Date.now()}`,
+                    });
+                    console.log("[delegation] resolve:upsert_local_template", {
+                        target,
+                        templateId: localTemplate._id,
+                        upserted,
                     });
                     continue;
                 }
 
                 const publicTemplate = publicTemplates.find(
-                    (t) => t.name?.toLowerCase() === target
+                    (t) => toAssigneeSlug(String(t.name ?? "")) === target
                 );
                 if (publicTemplate?._id) {
-                    await ctx.runMutation(internal.agentTemplates.installPublicTemplateSystem, {
+                    const installed = await ctx.runMutation(internal.agentTemplates.installPublicTemplateSystem, {
                         templateId: publicTemplate._id,
                         targetDepartmentId: args.departmentId,
+                    });
+                    console.log("[delegation] resolve:install_public_template", {
+                        target,
+                        templateId: publicTemplate._id,
+                        installed,
                     });
                 }
             }
@@ -130,6 +188,13 @@ export const delegateTask = internalAction({
             });
             ({ names: resolvedNames, sessions: resolvedSessionKeys, unresolved: unresolvedNames } =
                 resolveAssignees(agents));
+
+            console.log("[delegation] resolve:after_upsert", {
+                departmentId: args.departmentId,
+                requestedAssignees,
+                resolvedSessionKeys,
+                unresolvedNames,
+            });
         }
 
         if (resolvedSessionKeys.length === 0) {

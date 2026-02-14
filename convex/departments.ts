@@ -35,16 +35,26 @@ export const create = mutation({
             createdAt: now,
         });
 
-        // Seed default "Jarvis" agent for the new department
-        await ctx.db.insert("agents", {
-            departmentId,
-            name: "Jarvis",
-            role: "Head of Operations",
-            description: "Coordenador do departamento focado em orquestração e delegação.",
-            sessionKey: `agent:jarvis:${args.slug}`,
-            status: "idle",
-            lastSeenAt: now,
-        });
+        // Seed default "Jarvis" agent for the new department (idempotent on retries).
+        const jarvisSessionKey = `agent:jarvis:${args.slug}`;
+        const existingJarvis = await ctx.db
+            .query("agents")
+            .withIndex("by_dept_sessionKey", (q) =>
+                q.eq("departmentId", departmentId).eq("sessionKey", jarvisSessionKey)
+            )
+            .unique();
+        if (!existingJarvis) {
+            await ctx.db.insert("agents", {
+                departmentId,
+                name: "Jarvis",
+                slug: "jarvis",
+                role: "Head of Operations",
+                description: "Coordenador do departamento focado em orquestração e delegação.",
+                sessionKey: jarvisSessionKey,
+                status: "idle",
+                lastSeenAt: now,
+            });
+        }
 
         return departmentId;
     },

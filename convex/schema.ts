@@ -147,7 +147,9 @@ export default defineSchema({
    */
   agents: defineTable({
     departmentId: v.optional(v.id("departments")),
+    templateId: v.optional(v.id("agentTemplates")),
     name: v.string(),
+    slug: v.optional(v.string()),
     avatar: v.optional(v.string()),
     role: v.string(),
     sessionKey: v.string(),
@@ -162,7 +164,9 @@ export default defineSchema({
   })
     .index("by_sessionKey", ["sessionKey"])
     .index("by_departmentId", ["departmentId"])
-    .index("by_dept_sessionKey", ["departmentId", "sessionKey"]),
+    .index("by_dept_sessionKey", ["departmentId", "sessionKey"])
+    .index("by_department_template", ["departmentId", "templateId"])
+    .index("by_department_slug", ["departmentId", "slug"]),
 
   /**
    * Tasks (Kanban)
