@@ -54,20 +54,31 @@ function friendlyTool(tool: string): ToolMeta {
 
 const CAPABILITY_TOOL_MAP: Record<string, string[]> = {
     web_search: ["tavily"],
-    send_email: ["resend", "gmail"],
+    send_email: ["resend_or_gmail"],
     create_github_issue: ["github"],
     create_pull_request: ["github"],
     create_notion_page: ["notion"],
     create_notion_database_item: ["notion"],
     update_notion_page: ["notion"],
     post_to_x: ["twitter"],
-    generate_image: ["dalle", "openai"],
+    generate_image: ["dalle_or_openai"],
+};
+
+const TOOL_ALIASES: Record<string, string[]> = {
+    resend_or_gmail: ["resend", "gmail"],
+    dalle_or_openai: ["dalle", "openai"],
 };
 
 function humanizeToolName(type: string) {
+    if (type === "resend_or_gmail") return "Resend or Gmail";
+    if (type === "dalle_or_openai") return "DALL-E or OpenAI";
     if (type === "twitter") return "X";
     if (type === "dalle") return "DALL-E";
     return type.charAt(0).toUpperCase() + type.slice(1);
+}
+
+function isIntegrationConnected(integration: any): boolean {
+    return String(integration?.oauthStatus ?? "connected").toLowerCase() === "connected";
 }
 
 const AgentStore: React.FC = () => {
@@ -111,20 +122,29 @@ const AgentStore: React.FC = () => {
 
     const getMissingTools = (capabilities?: string[]) => {
         const enabledCapabilities = Array.isArray(capabilities) ? capabilities : [];
-        const requiredTools = new Set<string>();
-        for (const capability of enabledCapabilities) {
-            for (const tool of CAPABILITY_TOOL_MAP[capability] ?? []) {
-                requiredTools.add(tool);
-            }
-        }
-
         const connectedTypes = new Set(
             (integrations ?? [])
-                .filter((integration: any) => String(integration.oauthStatus ?? "connected").toLowerCase() === "connected")
+                .filter((integration: any) => isIntegrationConnected(integration))
                 .map((integration: any) => String(integration.type).toLowerCase())
         );
 
-        return Array.from(requiredTools).filter((tool) => !connectedTypes.has(tool));
+        const missingTools = new Set<string>();
+        for (const capability of enabledCapabilities) {
+            const requirements = CAPABILITY_TOOL_MAP[capability] ?? [];
+            for (const requirement of requirements) {
+                const options = TOOL_ALIASES[requirement] ?? [requirement];
+                const satisfied = options.some((option) => connectedTypes.has(option));
+                if (!satisfied) {
+                    if (options.length > 1) {
+                        missingTools.add(requirement);
+                    } else {
+                        missingTools.add(options[0]);
+                    }
+                }
+            }
+        }
+
+        return Array.from(missingTools);
     };
 
     const canHireTemplate = (name: string, capabilities?: string[]) => {
@@ -201,15 +221,20 @@ const AgentStore: React.FC = () => {
     const getConnectedToolTypes = (capabilities?: string[]) => {
         const enabledCapabilities = Array.isArray(capabilities) ? capabilities : [];
         const connectedTypes = new Set(
-            (integrations ?? []).map((integration: any) => String(integration.type).toLowerCase())
+            (integrations ?? [])
+                .filter((integration: any) => isIntegrationConnected(integration))
+                .map((integration: any) => String(integration.type).toLowerCase())
         );
         const toolTypes = new Set<string>();
 
         for (const capability of enabledCapabilities) {
             const requiredTools = CAPABILITY_TOOL_MAP[capability] ?? [];
             for (const toolType of requiredTools) {
-                if (connectedTypes.has(toolType)) {
-                    toolTypes.add(toolType);
+                const options = TOOL_ALIASES[toolType] ?? [toolType];
+                for (const option of options) {
+                    if (connectedTypes.has(option)) {
+                        toolTypes.add(option);
+                    }
                 }
             }
         }
@@ -505,7 +530,9 @@ const AgentStore: React.FC = () => {
                                     key={tool}
                                     className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 border border-amber-200 text-xs font-semibold text-amber-800"
                                 >
-                                    <ServiceLogo service={tool} className="w-4 h-4" />
+                                    {tool === "resend_or_gmail" || tool === "dalle_or_openai" ? null : (
+                                        <ServiceLogo service={tool} className="w-4 h-4" />
+                                    )}
                                     <span>{humanizeToolName(tool)}</span>
                                 </span>
                             ))}
