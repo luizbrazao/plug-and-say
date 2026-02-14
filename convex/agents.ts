@@ -46,6 +46,27 @@ function buildTemplateSessionKey(name: string, departmentSlug: string): string {
     return `agent:${slug}:main`;
 }
 
+function buildDeterministicSessionKeyFromSlug(slug: string, departmentSlug: string): string {
+    const safeSlug = normalizeAgentSlug(slug) || "agent";
+    if (safeSlug === "jarvis") {
+        const safeDeptSlug = normalizeAgentSlug(departmentSlug) || "main";
+        return `agent:jarvis:${safeDeptSlug}`;
+    }
+    if (safeSlug === "friday") {
+        return "agent:main:main";
+    }
+    return `agent:${safeSlug}:main`;
+}
+
+function pickPreferredAgent<T extends { _creationTime: number; lastSeenAt?: number }>(agents: T[]): T {
+    return [...agents].sort((a, b) => {
+        const seenA = a.lastSeenAt ?? 0;
+        const seenB = b.lastSeenAt ?? 0;
+        if (seenA !== seenB) return seenB - seenA;
+        return b._creationTime - a._creationTime;
+    })[0];
+}
+
 /**
  * Agents table shape (from schema.ts):
  * - name: string
@@ -164,14 +185,19 @@ export const upsertFromTemplateForDepartment = internalMutation({
         const slug = normalizeAgentSlug(template.name);
         const sessionKey = buildTemplateSessionKey(template.name, department.slug ?? "main");
 
-        const byTemplate = await ctx.db
+        const byTemplateCandidates = await ctx.db
             .query("agents")
             .withIndex("by_department_template", (q) =>
                 q.eq("departmentId", args.departmentId).eq("templateId", args.templateId)
             )
-            .unique();
-        if (byTemplate) {
-            await ctx.db.patch(byTemplate._id, {
+            .collect();
+        if (byTemplateCandidates.length > 0) {
+            const keeper = pickPreferredAgent(byTemplateCandidates);
+            const keeperSessionKey =
+                typeof keeper.sessionKey === "string" && keeper.sessionKey.trim().length > 0
+                    ? keeper.sessionKey.trim()
+                    : sessionKey;
+            await ctx.db.patch(keeper._id, {
                 templateId: template._id,
                 slug,
                 name: template.name,
@@ -180,9 +206,10 @@ export const upsertFromTemplateForDepartment = internalMutation({
                 description: template.description ?? `${template.role} specialist.`,
                 systemPrompt: template.systemPrompt,
                 allowedTools: template.capabilities ?? [],
+                sessionKey: keeperSessionKey,
                 lastSeenAt: Date.now(),
             });
-            return { ok: true, agentId: byTemplate._id, created: false, dedupedLegacy: false };
+            return { ok: true, agentId: keeper._id, created: false, dedupedLegacy: false };
         }
 
         const deptAgents = await ctx.db
@@ -202,6 +229,10 @@ export const upsertFromTemplateForDepartment = internalMutation({
         });
 
         if (legacy) {
+            const legacySessionKey =
+                typeof legacy.sessionKey === "string" && legacy.sessionKey.trim().length > 0
+                    ? legacy.sessionKey.trim()
+                    : sessionKey;
             await ctx.db.patch(legacy._id, {
                 templateId: template._id,
                 slug,
@@ -211,7 +242,7 @@ export const upsertFromTemplateForDepartment = internalMutation({
                 description: template.description ?? `${template.role} specialist.`,
                 systemPrompt: template.systemPrompt,
                 allowedTools: template.capabilities ?? [],
-                sessionKey: legacy.sessionKey || sessionKey,
+                sessionKey: legacySessionKey,
                 lastSeenAt: Date.now(),
             });
             return { ok: true, agentId: legacy._id, created: false, dedupedLegacy: true };
@@ -233,6 +264,39 @@ export const upsertFromTemplateForDepartment = internalMutation({
         });
 
         return { ok: true, agentId, created: true, dedupedLegacy: false };
+    },
+});
+
+export const ensureSessionKeyForAgent = internalMutation({
+    args: {
+        agentId: v.id("agents"),
+    },
+    handler: async (ctx, args) => {
+        const agent = await ctx.db.get(args.agentId);
+        if (!agent) {
+            throw new Error("Agent not found.");
+        }
+
+        const existingSessionKey = typeof agent.sessionKey === "string" ? agent.sessionKey.trim() : "";
+        if (existingSessionKey.length > 0) {
+            return { ok: true, updated: false, agentId: agent._id, sessionKey: existingSessionKey };
+        }
+
+        const department = agent.departmentId ? await ctx.db.get(agent.departmentId) : null;
+        const departmentSlug = department?.slug ?? "main";
+        const slug = normalizeAgentSlug(agent.slug ?? agent.name ?? "agent");
+        if (!slug) {
+            throw new Error("Cannot derive agent slug to generate a deterministic sessionKey.");
+        }
+
+        const nextSessionKey = buildDeterministicSessionKeyFromSlug(slug, departmentSlug);
+        await ctx.db.patch(agent._id, {
+            slug,
+            sessionKey: nextSessionKey,
+            lastSeenAt: Date.now(),
+        });
+
+        return { ok: true, updated: true, agentId: agent._id, sessionKey: nextSessionKey };
     },
 });
 
@@ -572,7 +636,18 @@ export const createCustom = mutation({
         });
 
         const slug = normalizeAgentSlug(name);
-        const sessionKey = `agent:${slug}:${Date.now()}`;
+        if (!slug) throw new Error("Agent name must generate a valid slug.");
+        const slugConflicts = await ctx.db
+            .query("agents")
+            .withIndex("by_department_slug", (q) =>
+                q.eq("departmentId", args.departmentId).eq("slug", slug)
+            )
+            .collect();
+        if (slugConflicts.length > 0) {
+            throw new Error("An agent with this slug already exists in the department.");
+        }
+
+        const sessionKey = buildDeterministicSessionKeyFromSlug(slug, department.slug ?? "main");
         const now = Date.now();
         const capabilities = args.allowedTools ?? [];
 

@@ -53,37 +53,110 @@ export const delegateTask = internalAction({
         tags: v.optional(v.array(v.string())),
     },
     handler: async (ctx, args): Promise<any> => {
-        const normalizeAssignee = (value: string) =>
-            value.trim().replace(/^@+/, "").toLowerCase();
-        const toAssigneeSlug = (value: string) => {
-            const normalized = normalizeAssignee(value);
-            const withoutPrefix = normalized.startsWith("agent:")
-                ? normalized.slice("agent:".length)
-                : normalized;
-            const base = withoutPrefix.split(":")[0] ?? "";
-            return base
-                .replace(/[_\s]+/g, "-")
-                .replace(/[^a-z0-9-]/g, "")
-                .replace(/-+/g, "-")
-                .replace(/^-+|-+$/g, "");
+        type AgentCandidate = { _id?: string; name?: string; slug?: string; sessionKey?: string };
+        const sanitizeToken = (value: string): string =>
+            value
+                .trim()
+                .toLowerCase()
+                .replace(/\s+/g, "")
+                .replace(/[^a-z0-9_:-]/g, "")
+                .slice(0, 32);
+        const sanitizeSlug = (value: string): string =>
+            value
+                .trim()
+                .toLowerCase()
+                .replace(/\s+/g, "")
+                .replace(/[^a-z0-9_-]/g, "")
+                .slice(0, 32);
+        const parseAssignee = (rawValue: string) => {
+            const trimmed = rawValue.trim();
+            const withoutAt = trimmed.replace(/^@+/, "");
+            const token = sanitizeToken(withoutAt);
+            const withoutAgentPrefix = token.startsWith("agent:")
+                ? token.slice("agent:".length)
+                : token;
+            const slug = sanitizeSlug((withoutAgentPrefix.split(":")[0] ?? "").replace(/^@+/, ""));
+            const nameCandidate = withoutAt.replace(/^agent:/i, "").split(":")[0]?.trim().toLowerCase() ?? "";
+            return {
+                raw: rawValue,
+                token,
+                slug,
+                nameCandidate,
+            };
         };
-        const matchesAssignee = (
-            requested: string,
-            candidate: { name?: string; slug?: string; sessionKey?: string }
-        ) => {
-            const normalizedRequested = normalizeAssignee(requested);
-            const requestedSlug = toAssigneeSlug(requested);
-            const candidateSession = normalizeAssignee(candidate.sessionKey ?? "");
-            const candidateSlug =
-                toAssigneeSlug(candidate.slug ?? "") ||
-                toAssigneeSlug(candidate.name ?? "") ||
-                toAssigneeSlug(candidateSession);
 
-            if (candidateSession === normalizedRequested) return true;
-            if (normalizedRequested.startsWith("agent:") && requestedSlug) {
-                if (candidateSession.startsWith(`agent:${requestedSlug}:`)) return true;
+        const matchAssignee = (
+            rawAssignee: string,
+            pool: AgentCandidate[]
+        ): { match?: AgentCandidate; kind: "match_exact" | "match_prefix" | "match_name" | "not_found"; slug: string } => {
+            const parsed = parseAssignee(rawAssignee);
+            console.log("[delegation] resolve:start", {
+                rawAssignee: rawAssignee,
+                deptId: args.departmentId,
+                parsed,
+            });
+
+            if (!parsed.slug && !parsed.nameCandidate) {
+                console.log("[delegation] resolve:not_found", {
+                    rawAssignee,
+                    deptId: args.departmentId,
+                    reason: "invalid_slug",
+                });
+                return { kind: "not_found", slug: "" };
             }
-            return requestedSlug.length > 0 && candidateSlug === requestedSlug;
+
+            const exact = pool.find((candidate) => {
+                const candidateSlug = sanitizeSlug(candidate.slug ?? candidate.name ?? "");
+                return parsed.slug.length > 0 && candidateSlug === parsed.slug;
+            });
+            if (exact) {
+                console.log("[delegation] resolve:match_exact", {
+                    rawAssignee,
+                    deptId: args.departmentId,
+                    slug: parsed.slug,
+                    agentSessionKey: exact.sessionKey,
+                    agentName: exact.name,
+                });
+                return { match: exact, kind: "match_exact", slug: parsed.slug };
+            }
+
+            const prefix = pool.find((candidate) => {
+                const candidateSession = sanitizeToken(candidate.sessionKey ?? "");
+                return parsed.slug.length > 0 && candidateSession.startsWith(`agent:${parsed.slug}:`);
+            });
+            if (prefix) {
+                console.log("[delegation] resolve:match_prefix", {
+                    rawAssignee,
+                    deptId: args.departmentId,
+                    slug: parsed.slug,
+                    agentSessionKey: prefix.sessionKey,
+                    agentName: prefix.name,
+                });
+                return { match: prefix, kind: "match_prefix", slug: parsed.slug };
+            }
+
+            const byName = pool.find((candidate) => {
+                const candidateName = (candidate.name ?? "").trim().toLowerCase();
+                return parsed.nameCandidate.length > 0 && candidateName === parsed.nameCandidate;
+            });
+            if (byName) {
+                console.log("[delegation] resolve:match_name", {
+                    rawAssignee,
+                    deptId: args.departmentId,
+                    nameCandidate: parsed.nameCandidate,
+                    agentSessionKey: byName.sessionKey,
+                    agentName: byName.name,
+                });
+                return { match: byName, kind: "match_name", slug: parsed.slug };
+            }
+
+            console.log("[delegation] resolve:not_found", {
+                rawAssignee,
+                deptId: args.departmentId,
+                slug: parsed.slug,
+                nameCandidate: parsed.nameCandidate,
+            });
+            return { kind: "not_found", slug: parsed.slug };
         };
 
         const title = args.title.trim();
@@ -98,13 +171,13 @@ export const delegateTask = internalAction({
             throw new Error("delegate_task requires at least one assignee.");
         }
 
-        const resolveAssignees = (pool: Array<{ name?: string; slug?: string; sessionKey?: string }>) => {
-            const matched: Array<{ name?: string; slug?: string; sessionKey?: string }> = [];
+        const resolveAssignees = (pool: AgentCandidate[]) => {
+            const matched: AgentCandidate[] = [];
             const unresolved: string[] = [];
             for (const requested of requestedAssignees) {
-                const found = pool.find((candidate) => matchesAssignee(requested, candidate));
-                if (found) {
-                    matched.push(found);
+                const result = matchAssignee(requested, pool);
+                if (result.match) {
+                    matched.push(result.match);
                 } else {
                     unresolved.push(requested);
                 }
@@ -126,19 +199,59 @@ export const delegateTask = internalAction({
             return { matched, names, sessions, unresolved };
         };
 
+        const summarizePool = (pool: AgentCandidate[]) =>
+            pool.map((candidate) => ({
+                id: candidate._id ?? null,
+                name: candidate.name ?? null,
+                slug: candidate.slug ?? null,
+                sessionKey: candidate.sessionKey ?? null,
+            }));
+
+        const ensureMissingSessionKeys = async (matches: AgentCandidate[]) => {
+            const missing = matches.filter(
+                (candidate) =>
+                    !candidate.sessionKey || candidate.sessionKey.trim().length === 0
+            );
+            if (missing.length === 0) return false;
+
+            console.log("[delegation] resolve:missing_session_keys", {
+                deptId: args.departmentId,
+                missing: missing.map((candidate) => ({
+                    id: candidate._id ?? null,
+                    name: candidate.name ?? null,
+                    slug: candidate.slug ?? null,
+                    sessionKey: candidate.sessionKey ?? null,
+                })),
+            });
+
+            for (const candidate of missing) {
+                if (!candidate._id) continue;
+                const ensured = await ctx.runMutation((internal as any).agents.ensureSessionKeyForAgent, {
+                    agentId: candidate._id,
+                });
+                console.log("[delegation] resolve:ensure_session_key", {
+                    deptId: args.departmentId,
+                    agentId: candidate._id,
+                    ensured,
+                });
+            }
+
+            return true;
+        };
+
         let agents: any[] = await ctx.runQuery(api.agents.listByDept, {
             departmentId: args.departmentId,
         });
 
-        let { names: resolvedNames, sessions: resolvedSessionKeys, unresolved: unresolvedNames } =
+        let { matched: resolvedMatched, names: resolvedNames, sessions: resolvedSessionKeys, unresolved: unresolvedNames } =
             resolveAssignees(agents);
-
-        console.log("[delegation] resolve:start", {
-            departmentId: args.departmentId,
-            requestedAssignees,
-            resolvedSessionKeys,
-            unresolvedNames,
-        });
+        if (await ensureMissingSessionKeys(resolvedMatched)) {
+            agents = await ctx.runQuery(api.agents.listByDept, {
+                departmentId: args.departmentId,
+            });
+            ({ matched: resolvedMatched, names: resolvedNames, sessions: resolvedSessionKeys, unresolved: unresolvedNames } =
+                resolveAssignees(agents));
+        }
 
         if (unresolvedNames.length > 0) {
             const deptTemplates: any[] = await ctx.runQuery(api.agentTemplates.listByDept, {
@@ -149,10 +262,10 @@ export const delegateTask = internalAction({
             });
 
             for (const unresolved of unresolvedNames) {
-                const target = toAssigneeSlug(unresolved);
+                const target = parseAssignee(unresolved).slug;
                 if (!target) continue;
                 const localTemplate = deptTemplates.find(
-                    (t) => toAssigneeSlug(String(t.name ?? "")) === target
+                    (t) => parseAssignee(String(t.slug ?? t.name ?? "")).slug === target
                 );
                 if (localTemplate?._id) {
                     const upserted = await ctx.runMutation(internal.agents.upsertFromTemplateForDepartment, {
@@ -168,7 +281,7 @@ export const delegateTask = internalAction({
                 }
 
                 const publicTemplate = publicTemplates.find(
-                    (t) => toAssigneeSlug(String(t.name ?? "")) === target
+                    (t) => parseAssignee(String(t.slug ?? t.name ?? "")).slug === target
                 );
                 if (publicTemplate?._id) {
                     const installed = await ctx.runMutation(internal.agentTemplates.installPublicTemplateSystem, {
@@ -186,18 +299,31 @@ export const delegateTask = internalAction({
             agents = await ctx.runQuery(api.agents.listByDept, {
                 departmentId: args.departmentId,
             });
-            ({ names: resolvedNames, sessions: resolvedSessionKeys, unresolved: unresolvedNames } =
+            ({ matched: resolvedMatched, names: resolvedNames, sessions: resolvedSessionKeys, unresolved: unresolvedNames } =
                 resolveAssignees(agents));
-
-            console.log("[delegation] resolve:after_upsert", {
-                departmentId: args.departmentId,
-                requestedAssignees,
-                resolvedSessionKeys,
-                unresolvedNames,
-            });
+            if (await ensureMissingSessionKeys(resolvedMatched)) {
+                agents = await ctx.runQuery(api.agents.listByDept, {
+                    departmentId: args.departmentId,
+                });
+                ({ matched: resolvedMatched, names: resolvedNames, sessions: resolvedSessionKeys, unresolved: unresolvedNames } =
+                    resolveAssignees(agents));
+            }
         }
 
         if (resolvedSessionKeys.length === 0) {
+            console.log("[delegation] resolve:pre_throw", {
+                deptId: args.departmentId,
+                requestedAssignees,
+                unresolvedNames,
+                matched: resolvedMatched.map((candidate) => ({
+                    id: candidate._id ?? null,
+                    name: candidate.name ?? null,
+                    slug: candidate.slug ?? null,
+                    sessionKey: candidate.sessionKey ?? null,
+                })),
+                resolvedSessionKeys,
+                pool: summarizePool(agents),
+            });
             throw new Error(
                 `delegate_task could not resolve assignees. Unknown: ${unresolvedNames.join(", ")}`
             );

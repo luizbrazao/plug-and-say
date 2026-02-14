@@ -5,6 +5,15 @@ import { checkLimit } from "./plans";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 
+function pickMostRecent<T extends { _creationTime: number; lastSeenAt?: number }>(rows: T[]): T {
+    return [...rows].sort((a, b) => {
+        const seenA = a.lastSeenAt ?? 0;
+        const seenB = b.lastSeenAt ?? 0;
+        if (seenA !== seenB) return seenB - seenA;
+        return b._creationTime - a._creationTime;
+    })[0];
+}
+
 function toSafePublicTemplate(template: any) {
     return {
         _id: template._id,
@@ -412,13 +421,21 @@ export const createAgentFromTemplate = mutation({
         if (!department.orgId) {
             throw new Error("Department has no organization linked.");
         }
-        const existingByTemplate = await ctx.db
+        const existingByTemplateRows = await ctx.db
             .query("agents")
             .withIndex("by_department_template", (q) =>
                 q.eq("departmentId", template.departmentId!).eq("templateId", template._id)
             )
-            .unique();
-        if (!existingByTemplate) {
+            .collect();
+        if (existingByTemplateRows.length > 1) {
+            console.log("[agentTemplates] createAgentFromTemplate found duplicates", {
+                templateId: template._id,
+                departmentId: template.departmentId,
+                count: existingByTemplateRows.length,
+                keeperAgentId: pickMostRecent(existingByTemplateRows)._id,
+            });
+        }
+        if (existingByTemplateRows.length === 0) {
             await checkLimit(ctx, department.orgId, "agents_per_department", {
                 departmentId: template.departmentId,
             });
@@ -478,13 +495,21 @@ export const installPublicTemplate = mutation({
             throw new Error("Access denied: you are not a member of the target department.");
         }
 
-        const existingByTemplate = await ctx.db
+        const existingByTemplateRows = await ctx.db
             .query("agents")
             .withIndex("by_department_template", (q) =>
                 q.eq("departmentId", args.targetDepartmentId).eq("templateId", template._id)
             )
-            .unique();
-        if (!existingByTemplate) {
+            .collect();
+        if (existingByTemplateRows.length > 1) {
+            console.log("[agentTemplates] installPublicTemplate found duplicates", {
+                templateId: template._id,
+                departmentId: args.targetDepartmentId,
+                count: existingByTemplateRows.length,
+                keeperAgentId: pickMostRecent(existingByTemplateRows)._id,
+            });
+        }
+        if (existingByTemplateRows.length === 0) {
             await checkLimit(ctx, targetDept.orgId, "agents_per_department", {
                 departmentId: args.targetDepartmentId,
             });
