@@ -1,0 +1,351 @@
+{
+  "common": {
+    "create": "Crear",
+    "save": "Guardar",
+    "cancel": "Cancelar",
+    "delete": "Eliminar",
+    "close": "Cerrar",
+    "update": "Actualizar",
+    "loading": "Cargando...",
+    "hire": "Contratar",
+    "hiring": "Contratando...",
+    "learnMore": "Saber más"
+  },
+  "language": {
+    "label": "Idioma",
+    "description": "Define el idioma predeterminado para la interfaz y las respuestas de los agentes en esta organización.",
+    "saving": "Guardando...",
+    "english": "Inglés",
+    "spanish": "Español",
+    "portuguese": "Portugués"
+  },
+  "views": {
+    "operations": "Operaciones",
+    "agentStore": "Tienda de Agentes",
+    "docs": "Documentos",
+    "knowledgeBase": "Base de Conocimiento",
+    "settings": "Configuración",
+    "board": "Tablero",
+    "history": "Historial"
+  },
+  "sidebar": {
+    "mySuperTeam": "Mi Súper Equipo",
+    "roster": "Roster",
+    "working": "TRABAJANDO",
+    "connected": "Conectado",
+    "connectTelegram": "Conectar Telegram",
+    "fireAgent": "Desvincular agente",
+    "confirmFire": "¿Seguro que deseas quitar a {{name}} del equipo?"
+  },
+  "kanban": {
+    "taskView": "Vista de tareas",
+    "newTask": "Nueva tarea",
+    "emptyColumn": "No hay tareas en esta etapa",
+    "clean": "Limpiar",
+    "cleaning": "Limpiando...",
+    "cleanDoneTitle": "Limpiar tarjetas Done del tablero",
+    "confirmCleanDone": "¿Eliminar todas las tarjetas de la columna Done del tablero?",
+    "columns": {
+      "inbox": "Inbox",
+      "assigned": "Asignadas",
+      "in_progress": "En progreso",
+      "review": "Revisión",
+      "done": "Done",
+      "blocked": "Bloqueadas"
+    },
+    "taskCard": {
+      "owner": "Responsable",
+      "unknownOwner": "Responsable desconocido",
+      "unassigned": "Sin asignar",
+      "deleteTask": "Eliminar tarea"
+    },
+    "drawer": {
+      "title": "Inspector de Nodo de Tarea",
+      "syncing": "Sincronizando...",
+      "close": "Cerrar",
+      "lifecycleStatus": "Estado del ciclo",
+      "approvalOnly": "solo aprobación",
+      "approve": "Aprobar",
+      "approving": "Aprobando...",
+      "flowExecutionProfile": "Perfil de ejecución",
+      "threadCommunications": "Comunicaciones del hilo",
+      "memory": "Memoria",
+      "docs": "Documentos",
+      "loadingDocs": "Cargando documentos...",
+      "noDocs": "Aún no hay documentos.",
+      "inputPlaceholder": "Ingresa una instrucción del sistema o comentario...",
+      "transmit": "Transmitir",
+      "globalActivity": "Actividad global",
+      "openActivity": "Abrir actividad global",
+      "closeActivity": "Cerrar actividad global"
+    }
+  },
+  "status": {
+    "inbox": "Inbox",
+    "assigned": "Asignadas",
+    "in_progress": "En progreso",
+    "review": "Revisión",
+    "done": "Done",
+    "blocked": "Bloqueadas"
+  },
+  "app": {
+    "loadingSession": "Cargando sesión...",
+    "desktopRequired": "Se requiere Desktop",
+    "desktopRequiredDesc": "El panel de PlugandSay está optimizado para pantallas amplias. Para la experiencia completa, usa Desktop.",
+    "plugAndPlayReady": "PlugandSay listo",
+    "selectDepartment": "Selecciona un departamento para iniciar operaciones.",
+    "noDepartment": "No se encontró ningún departamento. Crea el primero para iniciar operaciones.",
+    "createDepartment": "Crear departamento",
+    "onlyAdminsCanCreateDepartment": "Solo owners/admins pueden crear departamentos. Solicita acceso al administrador de la organización.",
+    "globalDocs": "Documentos globales",
+    "globalDocsDesc": "Activos y documentos generados por el squad.",
+    "loadingDocuments": "Cargando documentos...",
+    "noDocuments": "No se encontraron documentos.",
+    "statusDoneAlert": "Usa Aprobar para mover de revisión a done.",
+    "approveError": "No fue posible aprobar esta tarea.",
+    "confirmDeleteTask": "¿Seguro que deseas eliminar la tarea \"{{title}}\"?"
+  },
+  "agentStore": {
+    "selectDepartment": "Selecciona un departamento para acceder al Marketplace de Agentes.",
+    "loading": "Cargando marketplace neural...",
+    "title": "Marketplace de Agentes",
+    "subtitle": "Expande tus capacidades contratando agentes de IA especializados. Elige plantillas entrenadas o diseña un agente custom con un soul único.",
+    "createCustomAgent": "+ Crear agente custom",
+    "myDepartmentTemplates": "Plantillas de mi departamento",
+    "noTemplates": "No se encontraron plantillas. Empieza creando un agente custom.",
+    "communityAgents": "Agentes de la comunidad global",
+    "noCommunityAgents": "Aún no hay agentes públicos en la comunidad.",
+    "noExternalTools": "Sin herramientas externas",
+    "installs": "Instalaciones",
+    "rating": "Calificación",
+    "alreadyInSquad": "Ya está en el squad",
+    "defaultSquadLead": "Squad Lead por defecto",
+    "hireAgent": "Contratar {{name}}",
+    "hireSuccess": "Agente contratado.",
+    "hireFailed": "Error al contratar: {{message}}",
+    "alreadyInDept": "{{name}} ya está en tu squad.",
+    "communityHireSuccess": "{{name}} se unió a tu departamento desde el marketplace de la comunidad.",
+    "templateActions": {
+      "makePrivate": "Hacer privado",
+      "publish": "Publicar en la comunidad",
+      "edit": "Editar",
+      "delete": "Eliminar",
+      "confirmDelete": "¿Eliminar plantilla \"{{name}}\"?"
+    },
+    "credentialRequired": "Credencial requerida",
+    "credentialRequiredDesc": "Para contratar a {{name}}, configura credenciales para:",
+    "credentialHint": "Configura las credenciales requeridas en la pestaña de Credenciales y vuelve a intentarlo.",
+    "ok": "OK"
+  },
+  "billing": {
+    "currentUsage": "Uso actual",
+    "plan": "Plan",
+    "departments": "Departamentos",
+    "agentsPeak": "Agentes (pico en un departamento)",
+    "knowledgeDocs": "Documentos de conocimiento",
+    "limitReached": "Límite alcanzado en {{plan}}: {{labels}}.",
+    "pricingTitle": "Planes de precios",
+    "pricingSubtitle": "Gestiona, monitorea y optimiza tus operaciones con un plan adaptado a la etapa de tu equipo.",
+    "yearly": "Anual",
+    "monthly": "Mensual",
+    "subscriptionSuccess": "El checkout de suscripción se completó correctamente.",
+    "checkoutCanceled": "El checkout fue cancelado.",
+    "bestChoice": "MEJOR OPCIÓN",
+    "teamScale": "ESCALA DE EQUIPO",
+    "perMonth": "/ por mes",
+    "alwaysFree": "siempre gratis",
+    "billedYearly": "facturado anual",
+    "billedMonthly": "facturado mensual",
+    "currentPlan": "Plan actual",
+    "redirecting": "Redirigiendo...",
+    "upgradeTo": "Mejorar a {{plan}}",
+    "included": "Incluido",
+    "activeSubscription": "Este es tu plan activo.",
+    "saveWithYearly": "Ahorra con facturación anual.",
+    "switchToYearly": "Cambia a anual para reducir el costo mensual.",
+    "planDescriptions": {
+      "starter": "Para builders individuales que están empezando.",
+      "pro": "Para equipos individuales avanzados.",
+      "business": "Para colaboración de equipo a escala."
+    }
+  },
+  "knowledge": {
+    "title": "Base de Conocimiento",
+    "subtitle": "Conocimiento de la empresa cargado manualmente o desde archivos.",
+    "addText": "Agregar texto",
+    "uploadFile": "Subir archivo",
+    "titlePlaceholder": "Título",
+    "textPlaceholder": "Pega conocimiento de la empresa...",
+    "textRequired": "El texto es obligatorio.",
+    "manualKnowledge": "Conocimiento manual",
+    "entryCreated": "Entrada de conocimiento creada.",
+    "createFailed": "No se pudo crear la entrada de conocimiento.",
+    "uploadFailed": "Error de carga.",
+    "missingStorageId": "Falta storageId en la respuesta de carga.",
+    "uploadIngestFailed": "No se pudo cargar e ingerir el archivo.",
+    "uploadIngestSuccess": "{{name}} fue cargado e ingerido.",
+    "loadingEntries": "Cargando entradas de conocimiento...",
+    "noEntries": "Aún no hay entradas de conocimiento.",
+    "source": "Fuente",
+    "date": "Fecha",
+    "delete": "Eliminar"
+  },
+  "topNav": {
+    "defaults": {
+      "user": "Usuario",
+      "noEmail": "Sin email"
+    },
+    "menu": {
+      "open": "Abrir menú de usuario",
+      "profile": "Perfil",
+      "billingPlan": "Facturación y plan",
+      "team": "Equipo",
+      "helpLegal": "Ayuda y Legal",
+      "signOut": "Salir"
+    },
+    "panels": {
+      "profile": "Perfil",
+      "helpLegal": "Ayuda y Legal"
+    },
+    "panel": {
+      "close": "Cerrar panel"
+    },
+    "plan": {
+      "free": "Free",
+      "pro": "Pro",
+      "team": "Team"
+    },
+    "profile": {
+      "defaultRole": "Operator",
+      "subtitle": "Datos públicos y preferencias del usuario.",
+      "planBadge": "Plan {{plan}}",
+      "userAvatarAlt": "Avatar del usuario",
+      "avatarPreviewAlt": "Vista previa del avatar",
+      "uploadAvatar": "Subir avatar",
+      "uploadingAvatar": "Subiendo...",
+      "avatarHint": "JPG, PNG o WEBP (máx. {{maxSize}})",
+      "avatarTooLarge": "Avatar demasiado grande. El tamaño máximo permitido es {{maxSize}}.",
+      "avatarUploadError": "No se pudo subir el avatar. Inténtalo de nuevo.",
+      "name": "Nombre",
+      "namePlaceholder": "Tu nombre",
+      "email": "Email",
+      "emailPlaceholder": "tu@email.com",
+      "role": "Cargo",
+      "rolePlaceholder": "Ej.: Head of Operations",
+      "language": "Idioma",
+      "languageOptions": {
+        "pt": "Português (Brasil)",
+        "en": "English (US)",
+        "es": "Español"
+      },
+      "orgLanguageSyncError": "Perfil guardado, pero no se pudo actualizar el idioma de la organización.",
+      "saveError": "No se pudo guardar el perfil. Inténtalo de nuevo."
+    },
+    "helpLegal": {
+      "placeholderTitle": "Este panel base de {{panel}} fue creado.",
+      "placeholderDescription": "En el siguiente paso, implementaremos los campos y acciones reales de esta sección."
+    }
+  },
+  "landing": {
+    "brand": "Plug and Say",
+    "nav": {
+      "features": "Features",
+      "agentStore": "Agent Store",
+      "pricing": "Pricing",
+      "documentation": "Documentation",
+      "login": "Login",
+      "buildSquad": "Armar mi Squad",
+      "openMenu": "Abrir menú"
+    },
+    "hero": {
+      "badge": "Operaciones asistidas por IA",
+      "titleStart": "No contrates solo una IA. Contrata un",
+      "titleHighlight": "Escuadrón Completo",
+      "subtitle": "El primer gestor de operaciones donde las tareas no solo se listan, se ejecutan. Delega a Jarvis por Telegram y mira a tu squad trabajar en sincronía.",
+      "primaryCta": "Probar Gratis",
+      "secondaryCta": "Ver Demo",
+      "agentAlt": "Avatar del agente {{name}}",
+      "agentRoles": {
+        "Jarvis": "Maestro",
+        "Vision": "Analítica",
+        "Friday": "Operaciones",
+        "Wanda": "Creativa",
+        "Tony": "Midias sociales",
+        "Pepper": "Estrategia"
+      }
+    },
+    "trustedBy": "Tecnologías confiables en tu stack",
+    "features": {
+      "eyebrow": "Latest Technologies",
+      "title": "Tecnología de orquestación para quien no tiene tiempo que perder.",
+      "dashboard": {
+        "title": "Dashboard Operacional",
+        "copy": "Visualiza el progreso en tiempo real. Las tarjetas se mueven solas cuando los agentes completan tareas.",
+        "cta": "Explorar flujo",
+        "mockTitle": "Kanban autónomo",
+        "mockLive": "Live",
+        "inbox": "Inbox",
+        "progress": "En progreso",
+        "done": "Done"
+      },
+      "telegram": {
+        "title": "Comando por Telegram",
+        "copy": "No abras el dashboard. Envía un mensaje a Jarvis y él orquesta al equipo mientras tomas café."
+      },
+      "maestro": {
+        "title": "El Efecto Maestro",
+        "copy": "Jarvis no solo conversa; delega. Entiende tu demanda y activa a los especialistas correctos."
+      }
+    },
+    "integrations": {
+      "eyebrow": "Integraciones",
+      "title": "No reemplaces. Integra.",
+      "copy": "Conecta Plug and Say con tu stack actual. GitHub, Notion, Gmail y X. Tus agentes ahora tienen manos para actuar."
+    },
+    "testimonial": {
+      "quote": "Plug and Say transformó nuestra agencia. Ya no gestionamos tickets, gestionamos resultados. Es como tener 10 empleados de élite trabajando 24/7.",
+      "author": "Nombre del Fundador",
+      "role": "CEO de IA Operators"
+    },
+    "stats": {
+      "founded": {
+        "value": "2026",
+        "label": "Plug and Say Fundado"
+      },
+      "tasks": {
+        "value": "50K+",
+        "label": "Tareas Ejecutadas"
+      },
+      "squads": {
+        "value": "1K+",
+        "label": "Squads Activos"
+      }
+    },
+    "finalCta": {
+      "title": "Descubre el poder de la autonomía total.",
+      "primary": "Armar mi Squad",
+      "secondary": "Hablar con un Consultor"
+    },
+    "footer": {
+      "tagline": "Orquestación de squads autónomos para equipos orientados a resultados.",
+      "solution": "Solution",
+      "opsIntelligence": "Ops Intelligence",
+      "automation": "Automatización",
+      "security": "Seguridad",
+      "customers": "Customers",
+      "agencies": "Agencias",
+      "startups": "Startups",
+      "enterprises": "Enterprise",
+      "resources": "Resources",
+      "pricing": "Pricing",
+      "documentation": "Documentation",
+      "blog": "Blog",
+      "copyright": "Copyright 2026 Plug and Say AI. Todos los derechos reservados."
+    }
+  },
+  "settings": {
+    "integrations": "Integraciones",
+    "team": "Equipo",
+    "billing": "Facturación"
+  }
+}

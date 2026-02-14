@@ -1,0 +1,76 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@500;600;700;800&display=swap");
+@import "tailwindcss";
+
+@theme {
+  --color-warm-bg: #f7f4f0;
+  --color-surface: #ffffff;
+  --color-border-subtle: #e5e0d8;
+  --color-text-primary: #1a1a1a;
+  --color-text-secondary: #6b665e;
+  --color-accent-cream: #ebe7e0;
+}
+
+@layer base {
+  :root {
+    --font-body: "Inter", sans-serif;
+    --font-display: "Playfair Display", serif;
+  }
+
+  body {
+    @apply bg-warm-bg text-text-primary antialiased overflow-x-hidden;
+    font-family: var(--font-body);
+    min-height: 100vh;
+  }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-white/80 backdrop-blur-md border border-border-subtle rounded-2xl shadow-sm;
+  }
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.dashboard-shell h1,
+.dashboard-shell h2,
+.dashboard-shell h3,
+.dashboard-shell h4,
+.dashboard-shell h5,
+.dashboard-shell h6 {
+  font-family: var(--font-display);
+}
+
+@layer utilities {
+  .working-pulse {
+    @apply animate-pulse bg-emerald-500;
+  }
+
+  /* Custom Scrollbar */
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    @apply bg-border-subtle/50 rounded-full hover:bg-border-subtle;
+  }
+
+  /* Priority Strip Colors */
+  .priority-high {
+    @apply bg-red-500;
+  }
+
+  .priority-medium {
+    @apply bg-amber-500;
+  }
+
+  .priority-low {
+    @apply bg-blue-500;
+  }
+}
