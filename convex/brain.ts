@@ -7,6 +7,7 @@ import type { Id } from "./_generated/dataModel";
 const MAX_TOOL_ITERATIONS = 2;
 const TOOL_BLOB_GLOBAL_REGEX = /\[TOOL:\s*[a-zA-Z0-9_-]+\s+ARG:\s*\{[\s\S]*?\}\s*\]/g;
 const MEMORY_USED_MARKER_REGEX = /\[MEMORY_USED\]\s*/g;
+const INTERNAL_MARKER_LINE_REGEX = /^\[[A-Z0-9_:-]{2,}\]\s*/gm;
 const MARKDOWN_IMAGE_REGEX = /!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/gi;
 const ORGANIZATION_LANGUAGE_VALIDATOR = v.union(
     v.literal("en"),
@@ -283,6 +284,7 @@ function sanitizePublicAssistantContent(content: string): string {
     return content
         .replace(TOOL_BLOB_GLOBAL_REGEX, "")
         .replace(MEMORY_USED_MARKER_REGEX, "")
+        .replace(INTERNAL_MARKER_LINE_REGEX, "")
         .replace(/\n{3,}/g, "\n\n")
         .trim();
 }
@@ -1075,8 +1077,13 @@ export const thinkInternal = internalAction({
                 `Do not provide an intro like "Vou pedir ao..." unless tool execution fails. ` +
                 `Talk to the user only to confirm success AFTER tasks are created. ` +
                 `As Squad Lead, you have a team. DO NOT say you cannot do something. ` +
+                `ACTION OVER MEMORY: for real-time requests (emails, inbox, web search, current code/repo state), ` +
+                `Knowledge Base snippets are context only and must NOT replace action. ` +
+                `When real-time execution is needed, delegate to specialists immediately. ` +
                 `If you need information from the web, use 'delegate_task' to ask @Vision. ` +
-                `If you need to send an email, use 'delegate_task' to ask @Pepper. ` +
+                `If the user asks anything about Gmail/inbox/unread/last email/how many emails, ` +
+                `you MUST delegate immediately to @Pepper with 'delegate_task'. ` +
+                `Never answer that email access is unavailable at Squad Lead level. ` +
                 `Prioritize delegation to specialists instead of trying to execute every specialty yourself. ` +
                 `Specialists (Vision/Pepper) need clear context, expected output, and constraints to work effectively. ` +
                 `${delegateToolContract}\n${squadRoster}\n${subtaskProgress}\n${provenanceData}\n` +

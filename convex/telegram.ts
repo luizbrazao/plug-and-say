@@ -6,11 +6,13 @@ import type { Id } from "./_generated/dataModel";
 const TOOL_BLOB_GLOBAL_REGEX = /\[TOOL:\s*[a-zA-Z0-9_-]+\s+ARG:\s*\{[\s\S]*?\}\s*\]/g;
 const MEMORY_USED_MARKER_REGEX = /\[MEMORY_USED\]\s*/g;
 const MARKDOWN_IMAGE_REGEX = /!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/gi;
+const INTERNAL_MARKER_LINE_REGEX = /^\[[A-Z0-9_:-]{2,}\]\s*/gm;
 
 function sanitizeTelegramText(text: string): string {
     const base = text
         .replace(TOOL_BLOB_GLOBAL_REGEX, "")
         .replace(MEMORY_USED_MARKER_REGEX, "")
+        .replace(INTERNAL_MARKER_LINE_REGEX, "")
         .trim();
     const withoutImages = base.replace(MARKDOWN_IMAGE_REGEX, "").trim();
     const loweredWithoutImages = withoutImages.toLowerCase();
@@ -33,6 +35,28 @@ function sanitizeTelegramText(text: string): string {
     return merged
         .replace(/\n{3,}/g, "\n\n")
         .trim();
+}
+
+function normalizeSingleLine(value: string): string {
+    return value.replace(/\s+/g, " ").trim();
+}
+
+function summarizeTelegramTaskTitle(rawText: string, firstName: string): string {
+    const normalized = normalizeSingleLine(rawText);
+    if (!normalized) return `Telegram from ${firstName}`;
+
+    const cleaned = normalized
+        .replace(/^\s*\/[a-z0-9_]+\b/i, "")
+        .replace(/^\s*[@#][^\s]+\s*/g, "")
+        .trim();
+    const safe = cleaned || normalized;
+    const max = 80;
+    return safe.length > max ? `${safe.slice(0, max - 3)}...` : safe;
+}
+
+function isFinishedStatus(status: unknown): boolean {
+    const normalized = String(status ?? "").trim().toLowerCase();
+    return normalized === "done" || normalized === "review";
 }
 
 function normalizeOrganizationLanguage(input: unknown): "en" | "es" | "pt" {
@@ -167,20 +191,26 @@ export const handleUpdate = internalMutation({
         const fallbackAgent = agents.find((a) => a.sessionKey === "agent:main:main") || agents[0];
         const targetAgentSessionKey = jarvis?.sessionKey || fallbackAgent?.sessionKey || "agent:main:main";
 
-        // 2. Find or create task for this chat (Thread persistence)
+        // 2. Find an active task for this chat, or create a fresh one when the previous is finished.
         const chatMarker = `Telegram Chat ID: ${chat_id}`;
-        const existingTask = (
+        const tasksForChat = (
             await ctx.db
                 .query("tasks")
                 .withIndex("by_departmentId", (q) => q.eq("departmentId", dept._id))
                 .collect()
-        ).find((t) => typeof t.description === "string" && t.description.includes(chatMarker));
+        )
+            .filter((task) => typeof task.description === "string" && task.description.includes(chatMarker))
+            .sort(
+                (a, b) =>
+                    (b.createdAt ?? b._creationTime) - (a.createdAt ?? a._creationTime)
+            );
+        const latestTask = tasksForChat[0] ?? null;
+        const existingTask = tasksForChat.find((task) => !isFinishedStatus(task.status)) ?? null;
 
         let taskId = existingTask?._id;
 
         if (!taskId) {
-            const normalizedText = text.trim();
-            const titlePreview = normalizedText.length > 70 ? `${normalizedText.slice(0, 67)}...` : normalizedText;
+            const titlePreview = summarizeTelegramTaskTitle(text, firstName);
             taskId = await ctx.db.insert("tasks", {
                 departmentId: dept._id,
                 title: titlePreview || `Telegram from ${firstName}`,
@@ -204,6 +234,15 @@ export const handleUpdate = internalMutation({
                 taskId,
                 createdAt: Date.now(),
             });
+            if (latestTask && isFinishedStatus(latestTask.status)) {
+                console.log("[telegram] created fresh task after finished thread", {
+                    departmentId: String(dept._id),
+                    chatId: chat_id,
+                    previousTaskId: String(latestTask._id),
+                    previousStatus: latestTask.status,
+                    newTaskId: String(taskId),
+                });
+            }
         } else {
             // Reopen existing Telegram thread so it becomes visible in Kanban inbox again.
             const patch: Record<string, unknown> = {
