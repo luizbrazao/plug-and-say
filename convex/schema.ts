@@ -178,6 +178,7 @@ export default defineSchema({
     description: v.string(),
     createdBySessionKey: v.optional(v.string()),
     createdByName: v.optional(v.string()),
+    ownerUserId: v.optional(v.id("users")),
     status: taskStatus,
     assigneeSessionKeys: v.array(v.string()),
     parentNotifiedAt: v.optional(v.float64()),

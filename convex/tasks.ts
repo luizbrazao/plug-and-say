@@ -66,6 +66,69 @@ async function getOrganizationLanguageByDepartment(
     return "pt";
 }
 
+async function getOrgOwnerOrAdminUserId(
+    ctx: any,
+    orgId: Id<"organizations">
+): Promise<Id<"users"> | null> {
+    const organization = await ctx.db.get(orgId);
+    if (organization?.ownerId) {
+        return organization.ownerId;
+    }
+
+    const memberships = await ctx.db
+        .query("orgMemberships")
+        .withIndex("by_orgId", (q: any) => q.eq("orgId", orgId))
+        .collect();
+
+    const ownerMembership = memberships.find((membership: any) => membership.role === "owner");
+    if (ownerMembership?.userId) {
+        return ownerMembership.userId;
+    }
+    const adminMembership = memberships.find((membership: any) => membership.role === "admin");
+    return adminMembership?.userId ?? null;
+}
+
+async function getDepartmentFallbackOwnerUserId(
+    ctx: any,
+    departmentId: Id<"departments">
+): Promise<Id<"users"> | null> {
+    const department = await ctx.db.get(departmentId);
+    if (!department?.orgId) return null;
+    return await getOrgOwnerOrAdminUserId(ctx, department.orgId);
+}
+
+async function resolveTaskOwnerName(
+    ctx: any,
+    ownerUserId: Id<"users"> | undefined
+): Promise<string | null> {
+    if (!ownerUserId) return null;
+    const profile = await ctx.db
+        .query("userProfiles")
+        .withIndex("by_userId", (q: any) => q.eq("userId", ownerUserId))
+        .unique();
+    const user = await ctx.db.get(ownerUserId);
+    const profileName = String(profile?.displayName ?? "").trim();
+    if (profileName) return profileName;
+    const userName = String((user as any)?.name ?? "").trim();
+    if (userName) return userName;
+    const email = String((user as any)?.email ?? "").trim();
+    if (email) return email;
+    return null;
+}
+
+async function isOrgAdminOrOwner(
+    ctx: any,
+    userId: Id<"users">,
+    orgId: Id<"organizations">
+): Promise<boolean> {
+    const membership = await ctx.db
+        .query("orgMemberships")
+        .withIndex("by_userId_orgId", (q: any) => q.eq("userId", userId).eq("orgId", orgId))
+        .unique();
+    if (!membership) return false;
+    return membership.role === "owner" || membership.role === "admin";
+}
+
 /**
  * Create a task in PlugandSay.
  * Status starts as "assigned" if there are assignees, otherwise "inbox".
@@ -78,12 +141,29 @@ export const create = mutation({
         description: v.string(),
         createdBySessionKey: v.optional(v.string()),
         createdByName: v.optional(v.string()),
+        ownerUserId: v.optional(v.id("users")),
         assigneeSessionKeys: v.array(v.string()), // Keeping this as it's used in the handler and not explicitly removed in the diff for the handler
         priority: v.optional(v.union(v.literal("low"), v.literal("medium"), v.literal("high"))),
         tags: v.optional(v.array(v.string())),
     },
     handler: async (ctx, args) => {
         const now = Date.now();
+        const authenticatedUserId = await getAuthUserId(ctx);
+
+        let ownerUserId: Id<"users"> | null = null;
+        if (args.ownerUserId) {
+            if (authenticatedUserId && args.ownerUserId !== authenticatedUserId) {
+                const department = await ctx.db.get(args.departmentId);
+                if (!department?.orgId || !(await isOrgAdminOrOwner(ctx, authenticatedUserId, department.orgId))) {
+                    throw new Error("Only organization admins can set task owner to another user.");
+                }
+            }
+            ownerUserId = args.ownerUserId;
+        } else if (authenticatedUserId) {
+            ownerUserId = authenticatedUserId;
+        } else {
+            ownerUserId = await getDepartmentFallbackOwnerUserId(ctx, args.departmentId);
+        }
 
         // Para multitenancy, garantimos que a task pertence a uma org (department)
         const initialStatus = normalizeTaskStatus(
@@ -96,6 +176,7 @@ export const create = mutation({
             description: args.description,
             createdBySessionKey: args.createdBySessionKey,
             createdByName: args.createdByName,
+            ownerUserId: ownerUserId ?? undefined,
             status: initialStatus,
             assigneeSessionKeys: args.assigneeSessionKeys,
             priority: args.priority ?? "medium",
@@ -162,7 +243,7 @@ export const listByStatus = query({
             )
             .collect();
         // Defensive filter handles legacy uppercase/mixed-case rows.
-        return tasks
+        const filtered = tasks
             .filter((t) => {
                 const normalizedStatus = normalizeTaskStatus(String(t.status));
                 if (requestedStatus === "in_progress") {
@@ -174,14 +255,29 @@ export const listByStatus = query({
                 return normalizedStatus === requestedStatus;
             })
             .sort((a, b) => (b.createdAt ?? b._creationTime) - (a.createdAt ?? a._creationTime))
-            .slice(0, limit)
-            .map((t) => ({
-                ...t,
-                ownerName:
-                    t.createdByName ??
-                    parseTelegramUserNameFromTaskDescription(t.description) ??
-                    undefined,
-            }));
+            .slice(0, limit);
+
+        const ownerUserIds = Array.from(
+            new Set(
+                filtered
+                    .map((task) => task.ownerUserId)
+                    .filter((ownerId): ownerId is Id<"users"> => ownerId !== undefined)
+            )
+        );
+        const ownerNames = new Map<Id<"users">, string>();
+        for (const ownerUserId of ownerUserIds) {
+            const ownerName = await resolveTaskOwnerName(ctx, ownerUserId);
+            if (ownerName) ownerNames.set(ownerUserId, ownerName);
+        }
+
+        return filtered.map((task) => ({
+            ...task,
+            ownerName:
+                (task.ownerUserId ? ownerNames.get(task.ownerUserId) : undefined) ??
+                task.createdByName ??
+                parseTelegramUserNameFromTaskDescription(task.description) ??
+                undefined,
+        }));
     },
 });
 
@@ -257,6 +353,71 @@ export const get = query({
 });
 
 /**
+ * Inspector data for one task: delegated subtasks + recent related activities.
+ */
+export const getInspectorPanel = query({
+    args: {
+        departmentId: v.id("departments"),
+        taskId: v.id("tasks"),
+    },
+    handler: async (ctx, args) => {
+        const task = await ctx.db.get(args.taskId);
+        if (!task || task.departmentId !== args.departmentId) {
+            throw new Error("Task not found in this department");
+        }
+
+        const subtasks = await ctx.db
+            .query("tasks")
+            .withIndex("by_department_parentTaskId", (q) =>
+                q.eq("departmentId", args.departmentId).eq("parentTaskId", args.taskId)
+            )
+            .collect();
+
+        const subtaskIds = new Set(subtasks.map((subtask) => String(subtask._id)));
+        const recentDeptActivities = await ctx.db
+            .query("activities")
+            .withIndex("by_department_createdAt", (q) => q.eq("departmentId", args.departmentId))
+            .order("desc")
+            .take(120);
+        const relatedActivities = recentDeptActivities
+            .filter((activity) => {
+                if (!activity.taskId) return false;
+                if (String(activity.taskId) === String(args.taskId)) return true;
+                return subtaskIds.has(String(activity.taskId));
+            })
+            .slice(0, 12);
+
+        return {
+            task: {
+                _id: task._id,
+                title: task.title,
+                status: task.status,
+                assigneeSessionKeys: task.assigneeSessionKeys ?? [],
+                ownerUserId: task.ownerUserId,
+            },
+            subtasks: subtasks
+                .sort((a, b) => (b.createdAt ?? b._creationTime) - (a.createdAt ?? a._creationTime))
+                .map((subtask) => ({
+                    _id: subtask._id,
+                    title: subtask.title,
+                    status: subtask.status,
+                    assigneeSessionKeys: subtask.assigneeSessionKeys ?? [],
+                    createdAt: subtask.createdAt ?? subtask._creationTime,
+                })),
+            recentActivities: relatedActivities.map((activity) => ({
+                _id: activity._id,
+                type: activity.type,
+                message: activity.message,
+                taskId: activity.taskId,
+                actorName: activity.actorName,
+                actorType: activity.actorType,
+                createdAt: activity.createdAt,
+            })),
+        };
+    },
+});
+
+/**
  * tasks:getThreadSnapshot
  * - snapshot atômico de uma task + sua thread de mensagens
  * - ordena mensagens por createdAt asc (thread real)
@@ -320,18 +481,32 @@ export const setStatus = mutation({
     handler: async (ctx, args) => {
         const now = Date.now();
         const nextStatus = normalizeTaskStatus(args.status);
+        const authenticatedUserId = await getAuthUserId(ctx);
+        const task = await ctx.db.get("tasks", args.taskId);
+        if (!task || task.departmentId !== args.departmentId) {
+            throw new Error("Task not found in this department");
+        }
+
         const allowDirectDoneReasons = new Set([
             "specialist_completion_done",
             "brain_auto_done_from_provenance",
             "squad_lead_auto_close",
         ]);
-        if (nextStatus === "done" && !allowDirectDoneReasons.has(args.reason ?? "")) {
-            throw new Error("Direct move to done is disabled. Use tasks.approve from review.");
+
+        let canUserCloseTask = false;
+        if (nextStatus === "done" && authenticatedUserId) {
+            if (task.ownerUserId && task.ownerUserId === authenticatedUserId) {
+                canUserCloseTask = true;
+            } else {
+                const department = await ctx.db.get(task.departmentId);
+                if (department?.orgId) {
+                    canUserCloseTask = await isOrgAdminOrOwner(ctx, authenticatedUserId, department.orgId);
+                }
+            }
         }
 
-        const task = await ctx.db.get("tasks", args.taskId);
-        if (!task || task.departmentId !== args.departmentId) {
-            throw new Error("Task not found in this department");
+        if (nextStatus === "done" && !allowDirectDoneReasons.has(args.reason ?? "") && !canUserCloseTask) {
+            throw new Error("Direct move to done is disabled. Use tasks.approve from review.");
         }
 
         const previousStatus = normalizeTaskStatus(String(task.status));
@@ -362,7 +537,7 @@ export const setStatus = mutation({
                     parentTask.assigneeSessionKeys?.[0] ||
                     "agent:main:main";
 
-                await ctx.scheduler.runAfter(0, internal.brain.think, {
+                await ctx.scheduler.runAfter(0, internal.brain.thinkInternal, {
                     departmentId: task.departmentId,
                     taskId: parentTask._id,
                     agentSessionKey: watcherSessionKey,
@@ -456,7 +631,7 @@ export const approve = mutation({
                     parentTask.assigneeSessionKeys?.[0] ||
                     "agent:main:main";
 
-                await ctx.scheduler.runAfter(0, internal.brain.think, {
+                await ctx.scheduler.runAfter(0, internal.brain.thinkInternal, {
                     departmentId: task.departmentId,
                     taskId: parentTask._id,
                     agentSessionKey: watcherSessionKey,
@@ -575,6 +750,68 @@ export const clearDoneColumn = mutation({
         return {
             ok: true,
             clearedCount: visibleDoneTasks.length,
+        };
+    },
+});
+
+/**
+ * Backfill ownerUserId for legacy tasks without human owner.
+ */
+export const backfillOwnerUserId = mutation({
+    args: {
+        orgId: v.id("organizations"),
+        dryRun: v.optional(v.boolean()),
+    },
+    handler: async (ctx, args) => {
+        const userId = await getAuthUserId(ctx);
+        if (!userId) throw new Error("Unauthorized");
+
+        const canManageOrg = await isOrgAdminOrOwner(ctx, userId, args.orgId);
+        if (!canManageOrg) {
+            throw new Error("Access denied: admin or owner role required.");
+        }
+
+        const ownerUserId = await getOrgOwnerOrAdminUserId(ctx, args.orgId);
+        if (!ownerUserId) {
+            throw new Error("No owner/admin found for this organization.");
+        }
+
+        const departments = await ctx.db
+            .query("departments")
+            .withIndex("by_orgId", (q) => q.eq("orgId", args.orgId))
+            .collect();
+
+        let scanned = 0;
+        let missingOwner = 0;
+        let updated = 0;
+        const dryRun = args.dryRun ?? true;
+
+        for (const department of departments) {
+            const tasks = await ctx.db
+                .query("tasks")
+                .withIndex("by_departmentId", (q) => q.eq("departmentId", department._id))
+                .collect();
+            scanned += tasks.length;
+            for (const task of tasks) {
+                if (task.ownerUserId) continue;
+                missingOwner += 1;
+                if (dryRun) continue;
+                await ctx.db.patch(task._id, {
+                    ownerUserId,
+                });
+                updated += 1;
+            }
+        }
+
+        return {
+            ok: true,
+            orgId: args.orgId,
+            ownerUserId,
+            dryRun,
+            departmentsScanned: departments.length,
+            tasksScanned: scanned,
+            tasksMissingOwner: missingOwner,
+            tasksUpdated: updated,
         };
     },
 });

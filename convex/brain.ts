@@ -1,6 +1,8 @@
-import { internalAction, internalMutation, internalQuery } from "./_generated/server";
+import { action, internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 import { api, internal } from "./_generated/api";
+import { getAuthUserId } from "@convex-dev/auth/server";
+import type { Id } from "./_generated/dataModel";
 
 const MAX_TOOL_ITERATIONS = 2;
 const TOOL_BLOB_GLOBAL_REGEX = /\[TOOL:\s*[a-zA-Z0-9_-]+\s+ARG:\s*\{[\s\S]*?\}\s*\]/g;
@@ -271,6 +273,12 @@ function parseAllToolCalls(content: string): ToolCall[] {
     return calls;
 }
 
+function formatToolCallEcho(toolCalls: ToolCall[]): string {
+    return toolCalls
+        .map((toolCall) => `[TOOL: ${toolCall.name} ARG: ${JSON.stringify(toolCall.args)}]`)
+        .join("\n");
+}
+
 function sanitizePublicAssistantContent(content: string): string {
     return content
         .replace(TOOL_BLOB_GLOBAL_REGEX, "")
@@ -379,6 +387,11 @@ async function executeTool(
     const permissionAliases: Record<string, string[]> = {
         gmail_send_email: ["send_email"],
         send_email: ["gmail_send_email"],
+        list_emails: ["gmail_list_inbox"],
+        gmail_list_inbox: ["list_emails", "search_emails"],
+        get_email_details: ["gmail_get_message"],
+        gmail_get_message: ["get_email_details"],
+        search_emails: ["gmail_list_inbox", "list_emails"],
     };
     const aliasMatches =
         permissionAliases[toolCall.name]?.some((alias) => allowedTools?.includes(alias)) ?? false;
@@ -428,6 +441,61 @@ async function executeTool(
             to,
             subject,
             body,
+        });
+    }
+
+    if (toolCall.name === "list_emails") {
+        const limit =
+            typeof toolCall.args.limit === "number" && Number.isFinite(toolCall.args.limit)
+                ? toolCall.args.limit
+                : typeof toolCall.args.maxResults === "number" && Number.isFinite(toolCall.args.maxResults)
+                    ? toolCall.args.maxResults
+                    : undefined;
+
+        return await ctx.runAction((internal as any).tools.gmail.list_emails, {
+            departmentId,
+            limit,
+        });
+    }
+
+    if (toolCall.name === "get_email_details") {
+        const emailId =
+            typeof toolCall.args.emailId === "string"
+                ? toolCall.args.emailId
+                : typeof toolCall.args.messageId === "string"
+                    ? toolCall.args.messageId
+                    : "";
+        if (!emailId.trim()) {
+            throw new Error("Tool 'get_email_details' requires a non-empty 'emailId'.");
+        }
+
+        return await ctx.runAction((internal as any).tools.gmail.get_email_details, {
+            departmentId,
+            emailId,
+        });
+    }
+
+    if (toolCall.name === "search_emails") {
+        const query =
+            typeof toolCall.args.query === "string"
+                ? toolCall.args.query
+                : typeof toolCall.args.q === "string"
+                    ? toolCall.args.q
+                    : "";
+        const limit =
+            typeof toolCall.args.limit === "number" && Number.isFinite(toolCall.args.limit)
+                ? toolCall.args.limit
+                : typeof toolCall.args.maxResults === "number" && Number.isFinite(toolCall.args.maxResults)
+                    ? toolCall.args.maxResults
+                    : undefined;
+        if (!query.trim()) {
+            throw new Error("Tool 'search_emails' requires a non-empty 'query'.");
+        }
+
+        return await ctx.runAction((internal as any).tools.gmail.search_emails, {
+            departmentId,
+            query,
+            limit,
         });
     }
 
@@ -773,7 +841,7 @@ export const onNewMessage = internalMutation({
             const target = agents.find(a => a.name.toLowerCase() === name);
             if (target) {
                 // Schedule thinking for this agent
-                await ctx.scheduler.runAfter(0, internal.brain.think, {
+                await ctx.scheduler.runAfter(0, internal.brain.thinkInternal, {
                     departmentId: args.departmentId,
                     taskId: args.taskId,
                     agentSessionKey: target.sessionKey,
@@ -824,7 +892,7 @@ export const onNewTask = internalMutation({
 
         // 2. Schedule thinking for each unique agent
         for (const sessionKey of targetSessionKeys) {
-            await ctx.scheduler.runAfter(0, internal.brain.think, {
+            await ctx.scheduler.runAfter(0, internal.brain.thinkInternal, {
                 departmentId: args.departmentId,
                 taskId: args.taskId,
                 agentSessionKey: sessionKey,
@@ -836,10 +904,51 @@ export const onNewTask = internalMutation({
 });
 
 /**
- * internal:brain:think
+ * brain:think
+ * Public action used by the Task Inspector to force a re-analysis.
+ */
+export const think = action({
+    args: {
+        departmentId: v.id("departments"),
+        taskId: v.id("tasks"),
+        agentSessionKey: v.string(),
+        triggerKey: v.optional(v.string()),
+        language: v.optional(ORGANIZATION_LANGUAGE_VALIDATOR),
+    },
+    handler: async (ctx, args): Promise<{ ok: true }> => {
+        const userId = await getAuthUserId(ctx);
+        if (!userId) throw new Error("Unauthorized");
+
+        const department = await ctx.runQuery(api.departments.get, {
+            departmentId: args.departmentId,
+        });
+        if (!department) throw new Error("Department not found.");
+        if (!department.orgId) throw new Error("Department has no organization linked.");
+
+        const organizations = (await ctx.runQuery(api.organizations.listForUser, {})) as Array<{
+            _id: Id<"organizations">;
+            role: "owner" | "admin" | "member";
+        }>;
+        const membership = organizations.find((organization) => organization._id === department.orgId);
+        if (!membership) {
+            throw new Error("Access denied: not a member of this organization.");
+        }
+
+        await ctx.runAction(internal.brain.thinkInternal, {
+            ...args,
+            triggerKey:
+                args.triggerKey ??
+                `manual_reanalysis:${String(args.taskId)}:${String(userId)}:${Date.now()}`,
+        });
+        return { ok: true };
+    },
+});
+
+/**
+ * internal:brain:thinkInternal
  * The main "thinking" action. Fetches context and calls LLM.
  */
-export const think = internalAction({
+export const thinkInternal = internalAction({
     args: {
         departmentId: v.id("departments"),
         taskId: v.id("tasks"),
@@ -918,9 +1027,23 @@ export const think = internalAction({
             `using a high-quality artistic English prompt. Then call update_task_status with status "review".`;
         const visionProtocol =
             `VISION PROTOCOL: deliver your result and then call update_task_status with status "review".`;
+        const isPepper =
+            context.agent.name?.toLowerCase() === "pepper" ||
+            context.agent.sessionKey?.toLowerCase().includes(":pepper:");
+        const pepperGmailReadTools = ["list_emails", "get_email_details", "search_emails", "send_email"];
+        const pepperProtocol =
+            `PEPPER GMAIL PROTOCOL: You now have full access to the user's Gmail. ` +
+            `If asked for the last email, call [TOOL: list_emails ARG: {"limit": 10}] first to find the message id, ` +
+            `then call [TOOL: get_email_details ARG: {"emailId":"..."}] to read and summarize it. ` +
+            `For filtered lookup, use [TOOL: search_emails ARG: {"query":"...","limit":10}]. ` +
+            `Do not say you cannot access the inbox while these tools are available.`;
+        const baseAllowedTools = context.agent.allowedTools ?? [];
+        const baseAllowedToolsWithPepper = isPepper
+            ? Array.from(new Set([...baseAllowedTools, ...pepperGmailReadTools]))
+            : baseAllowedTools;
         const effectiveAllowedTools = isSquadLead
-            ? context.agent.allowedTools
-            : Array.from(new Set([...(context.agent.allowedTools ?? []), "update_task_status"]));
+            ? baseAllowedToolsWithPepper
+            : Array.from(new Set([...(baseAllowedToolsWithPepper ?? []), "update_task_status"]));
         console.log("[brain.think] tool policy", {
             agentSessionKey: args.agentSessionKey,
             agentName: context.agent.name,
@@ -937,9 +1060,10 @@ export const think = internalAction({
                 `Your current "Soul" (System Prompt): ${baseSystemPrompt}\n\n` +
                 `Language Protocol: You must communicate exclusively in ${targetLanguageLabel}. ` +
                 `All tool outputs must be summarized in ${targetLanguageLabel}.\n\n` +
-                `Instruction: Respond to the thread in character. Keep it concise. ` +
+            `Instruction: Respond to the thread in character. Keep it concise. ` +
             `Execute tools IMMEDIATELY. Do not announce what you are going to do. ` +
             `If a tool is needed, call it directly. Your final response to the user should happen only AFTER tool results are back. ` +
+            `NEVER send a message saying what you ARE GOING to do. ONLY send a message AFTER tools finish confirming what HAS BEEN done. ` +
             `When a tool is needed, output one or more tool calls in this format: [TOOL: name ARG: {json}]. ` +
             `You have access to Organizational Memory using the tool 'search_knowledge'. ` +
             `Use it when the user asks about past decisions, prior tasks, or historical context. ` +
@@ -963,7 +1087,7 @@ export const think = internalAction({
                 `Never leave the parent task open after returning the final summary. ` +
                 `If a specialist generated a file or image, your final report MUST include the link, and for images include markdown ![Image](url). ` +
                 `Do not say the specialist is still working when completed result data exists.\n`
-                : `${specialistCompletionContract}\n${context.agent.name?.toLowerCase() === "wanda" ? wandaProtocol : ""}\n${context.agent.name?.toLowerCase() === "vision" ? visionProtocol : ""}\n`) +
+                : `${specialistCompletionContract}\n${context.agent.name?.toLowerCase() === "wanda" ? wandaProtocol : ""}\n${context.agent.name?.toLowerCase() === "vision" ? visionProtocol : ""}\n${isPepper ? pepperProtocol : ""}\n`) +
             `After receiving tool observations, produce the final answer for the user.` +
             (effectiveAllowedTools ? `\nAllowed Tools: ${effectiveAllowedTools.join(", ")}` : "");
 
@@ -1058,8 +1182,12 @@ export const think = internalAction({
                 }
                 toolIterations += 1;
                 toolWasCalled = true;
-
-                conversationMessages.push({ role: "assistant", content: response });
+                const hasDelegateTool = toolCalls.some((call) => call.name === "delegate_task");
+                const assistantToolTurn =
+                    hasDelegateTool
+                        ? formatToolCallEcho(toolCalls)
+                        : response;
+                conversationMessages.push({ role: "assistant", content: assistantToolTurn });
 
                 for (const toolCall of toolCalls) {
                     let observation: any;
@@ -1140,6 +1268,10 @@ export const think = internalAction({
 
             const rawFinalResponse = usedLongTermMemory ? `[MEMORY_USED]\n${response}` : response;
             let finalResponse = sanitizePublicAssistantContent(rawFinalResponse);
+            const delegatedInThisRun = executedToolNames.has("delegate_task");
+            if (delegatedInThisRun && !toolExecutionFailed) {
+                finalResponse = localizedDelegationAcknowledge(targetLanguage);
+            }
             if (toolWasCalled && !finalResponse) {
                 finalResponse = localizedDelegationAcknowledge(targetLanguage);
             }
@@ -1205,7 +1337,6 @@ export const think = internalAction({
             }
 
             const explicitlyUpdatedStatus = executedToolNames.has("update_task_status");
-            const delegatedInThisRun = executedToolNames.has("delegate_task");
             const hasCompletedChildResult = (context.subtasks ?? []).some((subtask: any) =>
                 (subtask.status === "done" || subtask.status === "review") &&
                 (
@@ -1393,13 +1524,26 @@ export const checkDuplicateMessage = internalQuery({
 
         const now = Date.now();
         const expectedContent = String(args.content);
+        let maxSimilarity = 0;
 
-        return recent.some((m) => {
+        const duplicated = recent.some((m) => {
             if (m.fromSessionKey !== args.fromSessionKey) return false;
             if (now - m.createdAt > args.windowMs) return false;
             const similarity = trigramSimilarity(String(m.content ?? ""), expectedContent);
-            return similarity >= 0.9;
+            if (similarity > maxSimilarity) {
+                maxSimilarity = similarity;
+            }
+            return similarity >= 0.7;
         });
+
+        console.log("[brain.checkDuplicateMessage]", {
+            taskId: String(args.taskId),
+            fromSessionKey: args.fromSessionKey,
+            windowMs: args.windowMs,
+            duplicated,
+            maxSimilarity,
+        });
+        return duplicated;
     },
 });
 

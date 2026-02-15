@@ -77,7 +77,7 @@ export const dispatchDept = internalMutation({
 
                 // If they haven't been seen recently, give them a nudge
                 if (now - lastSeen > STALE_THRESHOLD_MS) {
-                    await ctx.scheduler.runAfter(0, internal.brain.think, {
+                    await ctx.scheduler.runAfter(0, internal.brain.thinkInternal, {
                         departmentId: args.departmentId,
                         taskId: agent.currentTaskId,
                         agentSessionKey: agent.sessionKey,

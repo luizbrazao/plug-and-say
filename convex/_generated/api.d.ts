@@ -45,6 +45,7 @@ import type * as thread_subscriptions_notify from "../thread_subscriptions_notif
 import type * as tools_delegation from "../tools/delegation.js";
 import type * as tools_email from "../tools/email.js";
 import type * as tools_github from "../tools/github.js";
+import type * as tools_gmail from "../tools/gmail.js";
 import type * as tools_gmailApi from "../tools/gmailApi.js";
 import type * as tools_gmailClient from "../tools/gmailClient.js";
 import type * as tools_gmailOAuth from "../tools/gmailOAuth.js";
@@ -104,6 +105,7 @@ declare const fullApi: ApiFromModules<{
   "tools/delegation": typeof tools_delegation;
   "tools/email": typeof tools_email;
   "tools/github": typeof tools_github;
+  "tools/gmail": typeof tools_gmail;
   "tools/gmailApi": typeof tools_gmailApi;
   "tools/gmailClient": typeof tools_gmailClient;
   "tools/gmailOAuth": typeof tools_gmailOAuth;

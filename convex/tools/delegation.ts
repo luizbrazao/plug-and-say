@@ -1,6 +1,7 @@
 import { internalAction, internalQuery } from "../_generated/server";
 import { v } from "convex/values";
 import { api, internal } from "../_generated/api";
+import type { Id } from "../_generated/dataModel";
 
 export const findRecentDelegatedTask = internalQuery({
     args: {
@@ -329,6 +330,25 @@ export const delegateTask = internalAction({
             );
         }
 
+        let inheritedOwnerUserId: Id<"users"> | undefined;
+        if (args.parentTaskId) {
+            try {
+                const parentTask: any = await ctx.runQuery(api.tasks.get, {
+                    departmentId: args.departmentId,
+                    taskId: args.parentTaskId,
+                });
+                if (parentTask?.ownerUserId) {
+                    inheritedOwnerUserId = parentTask.ownerUserId;
+                }
+            } catch (error) {
+                console.log("[delegation] owner:parent_lookup_failed", {
+                    deptId: args.departmentId,
+                    parentTaskId: args.parentTaskId,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }
+        }
+
         const taskDescription =
             unresolvedNames.length > 0
                 ? `${description}\n\n[Delegation note] Unresolved assignees: ${unresolvedNames.join(", ")}`
@@ -359,6 +379,7 @@ export const delegateTask = internalAction({
             parentTaskId: args.parentTaskId,
             title,
             description: taskDescription,
+            ownerUserId: inheritedOwnerUserId,
             assigneeSessionKeys: resolvedSessionKeys,
             priority: args.priority,
             tags: args.tags,

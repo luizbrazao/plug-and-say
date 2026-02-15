@@ -1,13 +1,9 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useConvexAuth } from "convex/react";
 import { useTranslation } from "react-i18next";
 import { api } from "../convex/_generated/api";
 import type { Id } from "../convex/_generated/dataModel";
 
-import { UxStateView } from "./UxStateView";
-import { UX_STATES } from "./uxContract";
-import { useUxFlowControllerInstrumented } from "./useUxFlowController.instrumented";
-import { makeConvexEmitter, ingestMutationRef } from "./convexEmitter";
 import { OrgProvider } from "./OrgContext";
 
 import { DeptProvider, useDept } from "./DeptContext";
@@ -34,8 +30,9 @@ import GitHubCredentialDoc from "./pages/docs/GitHubCredentialDoc";
 import { LandingPage } from "./pages/LandingPage";
 import { navigate, usePathname } from "./lib/router";
 import type { OrgSettingsTab } from "./components/OrgSettings";
-import { formatLocalizedDateTime, formatLocalizedTime, formatRelativeTimeFromNow } from "./lib/i18nTime";
+import { formatLocalizedDateTime, formatRelativeTimeFromNow } from "./lib/i18nTime";
 import { UPGRADE_MODAL_EVENT, type UpgradeModalDetail } from "./lib/upgradeModal";
+import { TaskInspector } from "./components/TaskInspector";
 
 const PENDING_INVITE_TOKEN_KEY = "mission-control-pending-invite-token";
 
@@ -61,38 +58,6 @@ const STATUS_COLOR: Record<Status, string> = {
   review: "bg-indigo-400",
   done: "bg-gray-400",
 };
-
-const STATUS_UPDATE_OPTIONS: Array<{ value: Status; disabled?: boolean }> = [
-  { value: "inbox" },
-  { value: "assigned" },
-  { value: "in_progress" },
-  { value: "review" },
-  { value: "done", disabled: true },
-];
-
-function normalizeUiTaskStatus(input: unknown): Status {
-  const normalized = String(input ?? "").toLowerCase();
-  if (normalized === "blocked") return "in_progress";
-  if (normalized === "inbox") return "inbox";
-  if (normalized === "assigned") return "assigned";
-  if (normalized === "in_progress") return "in_progress";
-  if (normalized === "review") return "review";
-  if (normalized === "done") return "done";
-  return "assigned";
-}
-
-function hasMemoryUsedMarker(content: string) {
-  return content.startsWith("[MEMORY_USED]");
-}
-
-function stripMemoryUsedMarker(content: string) {
-  return content.replace(/^\[MEMORY_USED\]\s*/m, "").trim();
-}
-
-function isToolBlobContent(content: string) {
-  const normalized = stripMemoryUsedMarker(content).trim();
-  return normalized.startsWith("[TOOL:") || normalized.includes("[TOOL:");
-}
 
 function isImageDocumentUrl(content: string) {
   const normalized = content.trim();
@@ -945,27 +910,13 @@ function JoinInvitePage({ token }: { token: string }) {
 }
 
 function MainAppContent() {
-  const { t, i18n } = useTranslation();
-  const language = i18n.resolvedLanguage ?? "pt";
+  const { t } = useTranslation();
   const { activeDeptId } = useDept();
   const sessionKey = "agent:main:main";
   const agents = useQuery(api.agents.listByDept, activeDeptId ? { departmentId: activeDeptId } : "skip");
   const [operationsView, setOperationsView] = useState<"board" | "history">("board");
 
   const [selectedTaskId, setSelectedTaskId] = useState<Id<"tasks"> | null>(null);
-  const [draft, setDraft] = useState("");
-
-  const [statusDraft, setStatusDraft] = useState<Status>("assigned");
-  const [statusBusy, setStatusBusy] = useState(false);
-
-  const snapshot = useQuery(
-    api.tasks.getThreadSnapshot,
-    selectedTaskId ? { taskId: selectedTaskId, limit: 50 } : "skip"
-  );
-  const docs = useQuery(
-    api.documents.listByTask,
-    selectedTaskId ? { taskId: selectedTaskId, limit: 20 } : "skip"
-  );
   const agentBySessionKey = useMemo(() => {
     const map: Record<string, { name: string; avatar?: string }> = {};
     for (const agent of agents ?? []) {
@@ -974,108 +925,11 @@ function MainAppContent() {
     return map;
   }, [agents]);
 
-  const createMessage = useMutation(api.messages.create);
-  const setStatus = useMutation(api.tasks.setStatus);
-  const approveTask = useMutation((api as any).tasks.approve);
-
-  const ingestUxEvent = useMutation(ingestMutationRef);
-  const uxEmitter = useMemo(() => makeConvexEmitter(ingestUxEvent), [ingestUxEvent]);
-
-  const runForTask = useMutation(api.uxFlows.runForTask);
-  const unblockTask = useMutation(api.tasks.unblock);
   const deleteTask = useMutation((api as any).tasks.remove);
   const clearDoneColumn = useMutation((api as any).tasks.clearDoneColumn);
 
   const [isActivityOpen, setIsActivityOpen] = useState(true);
-  const [isApproving, setIsApproving] = useState(false);
   const [isCleaningDoneColumn, setIsCleaningDoneColumn] = useState(false);
-
-  useEffect(() => {
-    const s = snapshot?.task?.status;
-    if (s) setStatusDraft(normalizeUiTaskStatus(s));
-  }, [snapshot?.task?._id, snapshot?.task?.status]);
-
-  async function onSend(e: FormEvent) {
-    e.preventDefault();
-    if (!selectedTaskId || !activeDeptId) return;
-
-    const content = draft.trim();
-    if (!content) return;
-
-    await createMessage({
-      departmentId: activeDeptId,
-      taskId: selectedTaskId,
-      fromSessionKey: sessionKey,
-      content,
-    });
-
-    setDraft("");
-  }
-
-  async function onSaveStatus() {
-    if (!selectedTaskId || !activeDeptId) return;
-    if (statusDraft === "done") {
-      window.alert(t("app.statusDoneAlert"));
-      return;
-    }
-    setStatusBusy(true);
-    try {
-      await setStatus({
-        departmentId: activeDeptId,
-        taskId: selectedTaskId,
-        status: statusDraft,
-        bySessionKey: sessionKey,
-        reason: "ui_change",
-      });
-    } finally {
-      setStatusBusy(false);
-    }
-  }
-
-  async function onApproveTask() {
-    if (!selectedTaskId || !activeDeptId) return;
-    setIsApproving(true);
-    try {
-      await approveTask({
-        departmentId: activeDeptId,
-        taskId: selectedTaskId,
-      });
-      setStatusDraft("done");
-    } catch (error: any) {
-      window.alert(error?.message || t("app.approveError"));
-    } finally {
-      setIsApproving(false);
-    }
-  }
-
-  const run = useCallback(() => {
-    if (!selectedTaskId || !activeDeptId) {
-      return Promise.resolve({ ok: false as const, reason: "failed" as const });
-    }
-    return runForTask({ departmentId: activeDeptId, taskId: selectedTaskId, sessionKey });
-  }, [runForTask, selectedTaskId, sessionKey, activeDeptId]);
-
-  const { state: uxState, isLocked: uxLocked, triggerAction, resolveAttention } =
-    useUxFlowControllerInstrumented(run, {
-      emitter: uxEmitter,
-      flowId: selectedTaskId ? selectedTaskId.toString() : "no-task",
-      userId: sessionKey,
-    });
-
-  const onResolveAttention = useCallback(async () => {
-    if (!selectedTaskId || !activeDeptId) return;
-
-    await unblockTask({
-      departmentId: activeDeptId,
-      taskId: selectedTaskId,
-      sessionKey,
-      nextStatus: "in_progress",
-    });
-
-    resolveAttention();
-  }, [selectedTaskId, activeDeptId, unblockTask, resolveAttention, sessionKey]);
-
-  const isAttention = uxState === UX_STATES.ATENCAO_NECESSARIA;
   const onDeleteTask = useCallback(async (task: any) => {
     if (!activeDeptId) return;
     const confirmed = window.confirm(t("app.confirmDeleteTask", { title: task.title }));
@@ -1199,196 +1053,15 @@ function MainAppContent() {
         {isActivityOpen ? <LiveActivityFeed /> : null}
       </aside>
 
-      {/* Task Inspection Drawer */}
-      {selectedTaskId && (
-        <div className="fixed inset-y-0 right-0 w-[520px] bg-white shadow-2xl border-l border-border-subtle z-50 flex flex-col transform transition-transform animate-in slide-in-from-right duration-300">
-          <div className="p-8 border-b border-border-subtle flex items-center justify-between bg-white/50 backdrop-blur-sm">
-            <div className="min-w-0">
-              <h3 className="text-[10px] font-bold uppercase tracking-widest text-text-secondary opacity-60">{t("kanban.drawer.title")}</h3>
-              <div className="truncate text-xl font-bold mt-1 text-text-primary">
-                {snapshot?.task?.title || t("kanban.drawer.syncing")}
-              </div>
-            </div>
-            <button
-              onClick={() => setSelectedTaskId(null)}
-              className="p-2 hover:bg-black/5 rounded-xl transition-all text-text-secondary"
-            >
-              <span className="text-xs font-bold uppercase tracking-tighter">{t("common.close")}</span>
-            </button>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-8 space-y-8 scrollbar-thin">
-            <div className="grid grid-cols-1 gap-6">
-              {/* Status Control */}
-              <div className="glass-card p-5 space-y-4">
-                <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-text-secondary/70">{t("kanban.drawer.lifecycleStatus")}</div>
-                <div className="flex gap-3">
-                  <select
-                    value={statusDraft}
-                    onChange={(e) => setStatusDraft(normalizeUiTaskStatus(e.target.value))}
-                    className="flex-1 bg-white border border-border-subtle rounded-xl px-4 py-2.5 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-black/5 transition-all shadow-sm"
-                  >
-                    {STATUS_UPDATE_OPTIONS.map(({ value, disabled }) => (
-                      <option key={value} value={value} disabled={disabled}>
-                        {value === "done"
-                          ? `${t(`status.${value}`)} (${t("kanban.drawer.approvalOnly")})`
-                          : t(`status.${value}`)}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={onSaveStatus}
-                    disabled={statusBusy}
-                    className="px-6 py-2.5 bg-text-primary text-white rounded-xl text-xs font-bold uppercase tracking-widest disabled:opacity-50 hover:bg-black transition-all shadow-md active:scale-95"
-                  >
-                    {t("common.update")}
-                  </button>
-                </div>
-                {normalizeUiTaskStatus(snapshot?.task?.status) === "review" && (
-                  <button
-                    onClick={() => { void onApproveTask(); }}
-                    disabled={isApproving}
-                    className="w-full py-2.5 bg-emerald-600 text-white rounded-xl text-xs font-bold uppercase tracking-widest disabled:opacity-50 hover:bg-emerald-700 transition-all shadow-md"
-                  >
-                    {isApproving ? t("kanban.drawer.approving") : t("kanban.drawer.approve")}
-                  </button>
-                )}
-              </div>
-
-              {/* UX Flow Control */}
-              <div className="glass-card p-5 space-y-5">
-                <div className="flex justify-between items-center">
-                  <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-text-secondary/70">{t("kanban.drawer.flowExecutionProfile")}</div>
-                  <div className="text-[10px] font-mono opacity-40 uppercase tracking-tighter">
-                    TXN_{selectedTaskId.toString().slice(-6)}
-                  </div>
-                </div>
-
-                <UxStateView
-                  state={uxState}
-                  actionLabel={isAttention ? "PROVIDE_INTEL" : undefined}
-                  onAction={isAttention ? () => { void onResolveAttention(); } : undefined}
-                />
-
-                <button
-                  onClick={() => { void triggerAction(); }}
-                  disabled={uxLocked}
-                  className="w-full py-4 bg-text-primary text-white rounded-2xl font-bold text-xs uppercase tracking-[0.2em] disabled:opacity-50 hover:bg-black transition-all shadow-lg active:scale-95"
-                >
-                  {uxLocked ? "EXECUTING..." : "DISPATCH_FLOW"}
-                </button>
-              </div>
-            </div>
-
-            {/* Message Thread */}
-            <div className="space-y-4">
-              <div className="text-[10px] font-bold uppercase tracking-[0.15em] text-text-secondary/70 px-2">{t("kanban.drawer.threadCommunications")}</div>
-              <div className="space-y-4">
-                {snapshot?.messages
-                  .filter((m: any) => !isToolBlobContent(m.content))
-                  .map((m: any) => {
-                    const sessionMeta = agentBySessionKey[m.fromSessionKey];
-                    const displayName = sessionMeta?.name || m.fromSessionKey.split(":").pop() || "User";
-                    const avatarSeed = sessionMeta?.avatar || displayName;
-                    return (
-                      <div key={m._id} className="p-5 rounded-3xl bg-warm-bg/30 border border-border-subtle group hover:border-text-primary/10 transition-colors shadow-sm">
-                        <div className="flex justify-between items-start mb-3">
-                          <div className="flex items-center gap-2">
-                            <div className="w-6 h-6 rounded-full border border-border-subtle overflow-hidden bg-slate-100 p-0.5">
-                              <img
-                                src={dicebearBotttsUrl(avatarSeed)}
-                                alt={`${displayName} avatar`}
-                                className="w-full h-full object-cover"
-                              />
-                            </div>
-                            <span className="text-[10px] font-bold uppercase tracking-wider text-text-primary bg-accent-cream px-2 py-0.5 rounded shadow-sm">{displayName}</span>
-                            {hasMemoryUsedMarker(m.content) && (
-                              <span className="text-[9px] font-bold uppercase tracking-wider text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full border border-blue-200">
-                                {t("kanban.drawer.memory")}
-                              </span>
-                            )}
-                          </div>
-                          <span className="text-[10px] font-mono font-bold text-text-secondary opacity-40">
-                            {formatLocalizedTime(m.createdAt, language)}
-                          </span>
-                        </div>
-                        <div className="text-sm leading-relaxed text-text-primary/90">{stripMemoryUsedMarker(m.content)}</div>
-                      </div>
-                    )
-                  })}
-              </div>
-            </div>
-
-            {/* Docs */}
-            <div className="space-y-4">
-              <div className="text-[10px] font-bold uppercase tracking-[0.15em] text-text-secondary/70 px-2">{t("kanban.drawer.docs")}</div>
-              {!docs ? (
-                <div className="p-4 rounded-2xl border border-border-subtle bg-white/40 text-xs text-text-secondary">
-                  {t("kanban.drawer.loadingDocs")}
-                </div>
-              ) : docs.length === 0 ? (
-                <div className="p-4 rounded-2xl border border-dashed border-border-subtle bg-white/20 text-xs text-text-secondary italic">
-                  {t("kanban.drawer.noDocs")}
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {docs.map((doc: any) => {
-                    const content = String(doc.content ?? "").trim();
-                    const imageDoc = isImageDocumentUrl(content);
-                    return (
-                      <div key={doc._id} className="p-4 rounded-2xl border border-border-subtle bg-white/60 space-y-3">
-                        <div className="flex items-center justify-between">
-                          <div className="text-xs font-bold text-text-primary">{doc.title}</div>
-                          <div className="text-[10px] font-mono text-text-secondary opacity-60">
-                            {formatLocalizedDateTime(doc.createdAt, language)}
-                          </div>
-                        </div>
-                        {imageDoc ? (
-                          <div className="space-y-2">
-                            <img
-                              src={content}
-                              alt={doc.title}
-                              className="w-full rounded-xl border border-border-subtle bg-white"
-                            />
-                            <a
-                              href={content}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-xs font-mono text-blue-700 underline break-all"
-                            >
-                              {content}
-                            </a>
-                          </div>
-                        ) : (
-                          <pre className="whitespace-pre-wrap text-xs text-text-primary/90 font-mono">{content}</pre>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* New Message Input */}
-          <div className="p-8 border-t border-border-subtle bg-white/80 backdrop-blur-md">
-            <form onSubmit={(e) => { void onSend(e); }} className="flex gap-3">
-              <input
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                placeholder={t("kanban.drawer.inputPlaceholder")}
-                className="flex-1 bg-warm-bg border border-border-subtle rounded-2xl px-5 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-black/5 transition-all shadow-inner"
-              />
-              <button
-                type="submit"
-                className="px-6 py-3 bg-text-primary text-white rounded-2xl text-xs font-bold uppercase tracking-widest hover:bg-black transition-all shadow-md active:scale-90"
-              >
-                {t("kanban.drawer.transmit")}
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
+      {activeDeptId ? (
+        <TaskInspector
+          departmentId={activeDeptId}
+          taskId={selectedTaskId}
+          onClose={() => setSelectedTaskId(null)}
+          sessionKey={sessionKey}
+          agentBySessionKey={agentBySessionKey}
+        />
+      ) : null}
 
     </>
   );

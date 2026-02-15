@@ -3,16 +3,30 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { checkLimit } from "./plans";
 
+const PEPPER_GMAIL_READ_TOOLS = [
+    "list_emails",
+    "get_email_details",
+    "search_emails",
+] as const;
+
 const CAPABILITY_TOOL_MAP: Record<string, string[]> = {
     jarvis: ["delegate_task", "search_knowledge"],
     vision: ["web_search", "update_task_status"],
     fury: ["web_search", "update_task_status"],
-    pepper: ["send_email", "update_task_status"],
+    pepper: ["send_email", ...PEPPER_GMAIL_READ_TOOLS, "update_task_status"],
     friday: ["web_search", "create_github_issue", "create_pull_request", "update_task_status"],
     wanda: ["generate_image", "update_task_status"],
     wong: ["update_notion_page", "create_notion_database_item", "update_task_status"],
     quill: ["post_to_x", "update_task_status"],
 };
+
+function withPepperGmailReadTools(agentLikeName: string, tools?: string[] | null): string[] {
+    const base = Array.isArray(tools) ? tools : [];
+    if (normalizeAgentSlug(agentLikeName) !== "pepper") {
+        return base;
+    }
+    return Array.from(new Set([...base, "send_email", ...PEPPER_GMAIL_READ_TOOLS]));
+}
 
 function normalizeAgentSlug(value: string): string {
     return value
@@ -184,6 +198,10 @@ export const upsertFromTemplateForDepartment = internalMutation({
 
         const slug = normalizeAgentSlug(template.name);
         const sessionKey = buildTemplateSessionKey(template.name, department.slug ?? "main");
+        const templateAllowedTools = withPepperGmailReadTools(
+            template.name,
+            template.capabilities ?? []
+        );
 
         const byTemplateCandidates = await ctx.db
             .query("agents")
@@ -205,7 +223,7 @@ export const upsertFromTemplateForDepartment = internalMutation({
                 role: template.role,
                 description: template.description ?? `${template.role} specialist.`,
                 systemPrompt: template.systemPrompt,
-                allowedTools: template.capabilities ?? [],
+                allowedTools: templateAllowedTools,
                 sessionKey: keeperSessionKey,
                 lastSeenAt: Date.now(),
             });
@@ -241,7 +259,7 @@ export const upsertFromTemplateForDepartment = internalMutation({
                 role: template.role,
                 description: template.description ?? `${template.role} specialist.`,
                 systemPrompt: template.systemPrompt,
-                allowedTools: template.capabilities ?? [],
+                allowedTools: templateAllowedTools,
                 sessionKey: legacySessionKey,
                 lastSeenAt: Date.now(),
             });
@@ -260,7 +278,7 @@ export const upsertFromTemplateForDepartment = internalMutation({
             status: "idle",
             lastSeenAt: Date.now(),
             systemPrompt: template.systemPrompt,
-            allowedTools: template.capabilities ?? [],
+            allowedTools: templateAllowedTools,
         });
 
         return { ok: true, agentId, created: true, dedupedLegacy: false };

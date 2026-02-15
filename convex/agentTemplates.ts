@@ -107,8 +107,12 @@ const PUBLIC_MARKETPLACE_SEED: Array<{
         role: "Communications Specialist",
         description: "Produz comunicações profissionais com assunto objetivo e CTA claro.",
         systemPrompt:
-            "You are Pepper. Draft crisp, professional communications and send timely updates with precise subject lines and CTA clarity.",
-        capabilities: ["send_email"],
+            "You are Pepper. You now have full access to the user's Gmail inbox. " +
+            "If asked for the last email, first call [TOOL: list_emails ARG: {\"limit\": 10}] to find message IDs, " +
+            "then call [TOOL: get_email_details ARG: {\"emailId\":\"...\"}] to read and summarize the message. " +
+            "For targeted lookups, call [TOOL: search_emails ARG: {\"query\":\"...\",\"limit\":10}]. " +
+            "Do not say you cannot access the inbox. Keep responses concise and action-oriented.",
+        capabilities: ["send_email", "list_emails", "get_email_details", "search_emails"],
     },
     {
         name: "Wong",
@@ -270,7 +274,7 @@ const CERTIFIED_SQUAD_SEED: Array<{
         name: "Pepper",
         role: "Email Marketing",
         description: "Especialista em CRM e e-mail marketing para fluxos de conversão e retenção.",
-        capabilities: ["send_email"],
+        capabilities: ["send_email", "list_emails", "get_email_details", "search_emails"],
         systemPrompt: buildSoulMarkdown(
             "Pepper",
             "Email Marketing",
@@ -278,6 +282,8 @@ const CERTIFIED_SQUAD_SEED: Array<{
                 "You think in lifecycle touchpoints and conversion timing.",
                 "You write clear sequences that move users step by step.",
                 "You optimize for relevance, cadence, and response quality.",
+                "You have full access to Gmail inbox tools and must use list_emails/search_emails then get_email_details when asked to read messages.",
+                "You must not claim inbox access is unavailable.",
             ],
             ["Designing drip sequences for lifecycle goals", "Writing high-clarity email campaigns with strong CTAs"],
             ["Deliverability and trust", "Consistent value across every send"],
@@ -319,6 +325,18 @@ const CERTIFIED_SQUAD_SEED: Array<{
     },
 ];
 
+const PEPPER_GMAIL_READINESS_PROMPT =
+    "You are Pepper. You now have full access to the user's Gmail inbox. " +
+    "If asked for the last email, use list_emails first to find the email id, then use get_email_details to read it. " +
+    "Use search_emails for filtered queries. Do not say you cannot access the inbox.";
+
+const PEPPER_GMAIL_READINESS_TOOLS = [
+    "send_email",
+    "list_emails",
+    "get_email_details",
+    "search_emails",
+];
+
 /**
  * Create an agent template for a department
  */
@@ -353,6 +371,94 @@ export const create = mutation({
             createdAt: Date.now(),
             createdByUserId: args.createdByUserId,
         });
+    },
+});
+
+/**
+ * Backfill Pepper prompt + Gmail read capabilities on existing templates and agents.
+ * Uses dryRun by default for safe preview.
+ */
+export const backfillPepperGmailReadiness = internalMutation({
+    args: {
+        departmentId: v.optional(v.id("departments")),
+        dryRun: v.optional(v.boolean()),
+    },
+    handler: async (ctx, args) => {
+        const dryRun = args.dryRun ?? true;
+        const templates = args.departmentId
+            ? await ctx.db
+                .query("agentTemplates")
+                .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
+                .collect()
+            : await ctx.db.query("agentTemplates").collect();
+        const agents = args.departmentId
+            ? await ctx.db
+                .query("agents")
+                .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
+                .collect()
+            : await ctx.db.query("agents").collect();
+
+        const pepperTemplates = templates.filter(
+            (template) => String(template.name ?? "").trim().toLowerCase() === "pepper"
+        );
+        const pepperAgents = agents.filter(
+            (agent) => String(agent.name ?? "").trim().toLowerCase() === "pepper"
+        );
+
+        let patchedTemplates = 0;
+        let patchedAgents = 0;
+
+        for (const template of pepperTemplates) {
+            const mergedTools = Array.from(
+                new Set([...(template.capabilities ?? []), ...PEPPER_GMAIL_READINESS_TOOLS])
+            );
+            const toolsChanged =
+                mergedTools.length !== (template.capabilities ?? []).length ||
+                mergedTools.some((tool, index) => tool !== (template.capabilities ?? [])[index]);
+            const promptChanged =
+                typeof template.systemPrompt !== "string" ||
+                !template.systemPrompt.includes("list_emails");
+            if (!toolsChanged && !promptChanged) continue;
+
+            patchedTemplates += 1;
+            if (!dryRun) {
+                await ctx.db.patch(template._id, {
+                    capabilities: mergedTools,
+                    systemPrompt: PEPPER_GMAIL_READINESS_PROMPT,
+                });
+            }
+        }
+
+        for (const agent of pepperAgents) {
+            const mergedTools = Array.from(
+                new Set([...(agent.allowedTools ?? []), ...PEPPER_GMAIL_READINESS_TOOLS])
+            );
+            const toolsChanged =
+                mergedTools.length !== (agent.allowedTools ?? []).length ||
+                mergedTools.some((tool, index) => tool !== (agent.allowedTools ?? [])[index]);
+            const promptChanged =
+                typeof agent.systemPrompt === "string" &&
+                agent.systemPrompt.trim().length > 0 &&
+                !agent.systemPrompt.includes("list_emails");
+            if (!toolsChanged && !promptChanged) continue;
+
+            patchedAgents += 1;
+            if (!dryRun) {
+                await ctx.db.patch(agent._id, {
+                    allowedTools: mergedTools,
+                    ...(promptChanged ? { systemPrompt: PEPPER_GMAIL_READINESS_PROMPT } : {}),
+                });
+            }
+        }
+
+        return {
+            ok: true,
+            dryRun,
+            patchedTemplates,
+            patchedAgents,
+            totalPepperTemplates: pepperTemplates.length,
+            totalPepperAgents: pepperAgents.length,
+        };
     },
 });
 

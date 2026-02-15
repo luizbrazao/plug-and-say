@@ -1,6 +1,7 @@
 import { action, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 import { api, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 
 const TOOL_BLOB_GLOBAL_REGEX = /\[TOOL:\s*[a-zA-Z0-9_-]+\s+ARG:\s*\{[\s\S]*?\}\s*\]/g;
 const MEMORY_USED_MARKER_REGEX = /\[MEMORY_USED\]\s*/g;
@@ -46,6 +47,25 @@ function localizedAcknowledge(language: "en" | "es" | "pt"): string {
     if (language === "en") return "Understood.";
     if (language === "es") return "Entendido.";
     return "Entendido.";
+}
+
+async function getOrgOwnerOrAdminUserId(
+    ctx: any,
+    orgId: Id<"organizations">
+): Promise<Id<"users"> | null> {
+    const organization = await ctx.db.get(orgId);
+    if (organization?.ownerId) {
+        return organization.ownerId;
+    }
+
+    const memberships = await ctx.db
+        .query("orgMemberships")
+        .withIndex("by_orgId", (q: any) => q.eq("orgId", orgId))
+        .collect();
+    const ownerMembership = memberships.find((membership: any) => membership.role === "owner");
+    if (ownerMembership?.userId) return ownerMembership.userId;
+    const adminMembership = memberships.find((membership: any) => membership.role === "admin");
+    return adminMembership?.userId ?? null;
 }
 
 /**
@@ -137,6 +157,7 @@ export const handleUpdate = internalMutation({
         const organizationLanguage = normalizeOrganizationLanguage(
             (org as { language?: string } | null)?.language
         );
+        const ownerUserId = dept.orgId ? await getOrgOwnerOrAdminUserId(ctx, dept.orgId) : null;
 
         const agents = await ctx.db
             .query("agents")
@@ -164,6 +185,9 @@ export const handleUpdate = internalMutation({
                 departmentId: dept._id,
                 title: titlePreview || `Telegram from ${firstName}`,
                 description: `Live support thread for ${firstName}. ${chatMarker}`,
+                createdBySessionKey: `user:telegram:${chat_id}`,
+                createdByName: firstName,
+                ownerUserId: ownerUserId ?? undefined,
                 status: TELEGRAM_INBOX_STATUS,
                 assigneeSessionKeys: [targetAgentSessionKey],
                 createdAt: Date.now(),
@@ -182,10 +206,14 @@ export const handleUpdate = internalMutation({
             });
         } else {
             // Reopen existing Telegram thread so it becomes visible in Kanban inbox again.
-            await ctx.db.patch(taskId, {
+            const patch: Record<string, unknown> = {
                 status: TELEGRAM_INBOX_STATUS,
                 assigneeSessionKeys: [targetAgentSessionKey],
-            });
+            };
+            if (!existingTask?.ownerUserId && ownerUserId) {
+                patch.ownerUserId = ownerUserId;
+            }
+            await ctx.db.patch(taskId, patch);
         }
 
         // 3. Create message in thread
@@ -198,7 +226,7 @@ export const handleUpdate = internalMutation({
         });
 
         // 4. Explicitly wake the Brain for Telegram inbound messages.
-        await ctx.scheduler.runAfter(0, internal.brain.think, {
+        await ctx.scheduler.runAfter(0, internal.brain.thinkInternal, {
             departmentId: dept._id,
             taskId: taskId as any,
             agentSessionKey: targetAgentSessionKey,
