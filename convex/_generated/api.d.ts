@@ -55,6 +55,8 @@ import type * as tools_knowledge from "../tools/knowledge.js";
 import type * as tools_notion from "../tools/notion.js";
 import type * as tools_search from "../tools/search.js";
 import type * as tools_social from "../tools/social.js";
+import type * as tools_upwork from "../tools/upwork.js";
+import type * as tools_upworkOAuth from "../tools/upworkOAuth.js";
 import type * as uprising from "../uprising.js";
 import type * as uxEvents from "../uxEvents.js";
 import type * as uxFlows from "../uxFlows.js";
@@ -115,6 +117,8 @@ declare const fullApi: ApiFromModules<{
   "tools/notion": typeof tools_notion;
   "tools/search": typeof tools_search;
   "tools/social": typeof tools_social;
+  "tools/upwork": typeof tools_upwork;
+  "tools/upworkOAuth": typeof tools_upworkOAuth;
   uprising: typeof uprising;
   uxEvents: typeof uxEvents;
   uxFlows: typeof uxFlows;

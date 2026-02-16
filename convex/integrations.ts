@@ -35,6 +35,7 @@ type IntegrationType =
     | "github"
     | "notion"
     | "twitter"
+    | "upwork"
     | "dalle";
 
 type IntegrationConfig = Record<string, unknown>;
@@ -98,6 +99,10 @@ function validateIntegrationConfig(type: IntegrationType, config: unknown) {
         case "gmail":
             // redirectUrl pode vir do config OU cair no fallback por CONVEX_SITE_URL.
             // Então a única coisa realmente obrigatória no config é clientId e clientSecret.
+            requireFields(["clientId", "clientSecret"]);
+            break;
+
+        case "upwork":
             requireFields(["clientId", "clientSecret"]);
             break;
 
@@ -177,6 +182,7 @@ export const getByDepartmentType = query({
             v.literal("github"),
             v.literal("notion"),
             v.literal("twitter"),
+            v.literal("upwork"),
             v.literal("dalle")
         ),
     },
@@ -232,6 +238,7 @@ export const upsert = mutation({
             v.literal("github"),
             v.literal("notion"),
             v.literal("twitter"),
+            v.literal("upwork"),
             v.literal("dalle")
         ),
         config: v.any(),
@@ -390,6 +397,7 @@ export const getByType = internalQuery({
             v.literal("github"),
             v.literal("notion"),
             v.literal("twitter"),
+            v.literal("upwork"),
             v.literal("dalle")
         ),
     },
@@ -417,6 +425,7 @@ export const getByTypeForDepartment = internalQuery({
             v.literal("github"),
             v.literal("notion"),
             v.literal("twitter"),
+            v.literal("upwork"),
             v.literal("dalle")
         ),
     },
@@ -551,6 +560,52 @@ export const generateGmailAuthUrl = action({
     },
 });
 
+export const generateUpworkAuthUrl = action({
+    args: {
+        orgId: v.id("organizations"),
+        departmentId: v.optional(v.id("departments")),
+    },
+    handler: async (
+        ctx,
+        args
+    ): Promise<{ url: string; scopes: string[] }> => {
+        await assertActionOrgAdmin(ctx, args.orgId);
+        if (args.departmentId) {
+            const department = await ctx.runQuery(api.departments.get, {
+                departmentId: args.departmentId,
+            });
+            if (!department) {
+                throw new Error("Department not found.");
+            }
+            if (!department.orgId) {
+                throw new Error("Department has no organization linked.");
+            }
+            if (department.orgId !== args.orgId) {
+                throw new Error("Department does not belong to the provided organization.");
+            }
+        }
+        const initiatedByUserId = await ctx.runQuery(api.organizations.currentUserId, {});
+        if (!initiatedByUserId) {
+            throw new Error("Unauthorized");
+        }
+
+        const response: any = await ctx.runAction(internal.tools.upworkOAuth.getAuthUrl, {
+            orgId: args.orgId,
+            departmentId: args.departmentId,
+            initiatedByUserId,
+        });
+
+        if (!response?.ok || typeof response.url !== "string") {
+            throw new Error("Failed to generate Upwork OAuth URL.");
+        }
+
+        return {
+            url: response.url,
+            scopes: Array.isArray(response.scopes) ? response.scopes : [],
+        };
+    },
+});
+
 /**
  * patchConfigForDepartment
  * Atualiza (merge) config de uma integração por departmentId + type.
@@ -568,6 +623,7 @@ export const patchConfigForDepartment = internalMutation({
             v.literal("github"),
             v.literal("notion"),
             v.literal("twitter"),
+            v.literal("upwork"),
             v.literal("dalle")
         ),
         patch: v.any(),
@@ -688,6 +744,7 @@ export const patchConfigForOrg = internalMutation({
             v.literal("github"),
             v.literal("notion"),
             v.literal("twitter"),
+            v.literal("upwork"),
             v.literal("dalle")
         ),
         patch: v.any(),

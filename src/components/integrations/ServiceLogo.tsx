@@ -6,6 +6,7 @@ type SupportedService =
     | "github"
     | "notion"
     | "twitter"
+    | "upwork"
     | "tavily"
     | "resend"
     | "anthropic"
@@ -59,6 +60,7 @@ const LOGO_CONFIG: Record<SupportedService, LogoConfig> = {
     },
 
     twitter: { label: "X", bg: "bg-white", source: "cdn", slug: "x" },
+    upwork: { label: "Upwork", bg: "bg-white", source: "cdn", slug: "upwork", color: "14a800" },
     dalle: { label: "DALL-E", bg: "bg-white", source: "inline" },
 };
 
@@ -131,6 +133,7 @@ export function ServiceLogo({ service, className }: ServiceLogoProps) {
         if (s.includes("openai")) return "openai";
         if (s.includes("tavily")) return "tavily";
         if (s.includes("resend")) return "resend";
+        if (s.includes("upwork")) return "upwork";
         if (s.includes("dalle") || s.includes("dall-e")) return "dalle";
         return s as SupportedService;
     }, [service]);

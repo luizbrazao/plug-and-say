@@ -58,6 +58,8 @@ function titleForService(service: string) {
             return "GitHub API";
         case "twitter":
             return "Twitter / X API";
+        case "upwork":
+            return "Upwork OAuth2 API";
         case "resend":
             return "Resend API";
         case "openai":
@@ -76,9 +78,12 @@ function titleForService(service: string) {
 export function CredentialModal({ isOpen, service, orgId, departmentId, integration, onClose }: CredentialModalProps) {
     const upsertIntegration = useMutation(api.integrations.upsert);
     const generateGmailAuthUrl = useAction(api.integrations.generateGmailAuthUrl);
+    const generateUpworkAuthUrl = useAction(api.integrations.generateUpworkAuthUrl);
 
     const [clientId, setClientId] = useState("");
     const [clientSecret, setClientSecret] = useState("");
+    const [upworkClientId, setUpworkClientId] = useState("");
+    const [upworkClientSecret, setUpworkClientSecret] = useState("");
     const [notionToken, setNotionToken] = useState("");
     const [notionParentPageId, setNotionParentPageId] = useState("");
     const [resendToken, setResendToken] = useState("");
@@ -93,9 +98,13 @@ export function CredentialModal({ isOpen, service, orgId, departmentId, integrat
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    const redirectUrl = useMemo(() => {
+    const gmailRedirectUrl = useMemo(() => {
         const base = getConvexBaseUrlForOauthRedirect();
         return base ? `${base}/oauth/gmail/callback` : "Missing VITE_CONVEX_URL";
+    }, []);
+    const upworkRedirectUrl = useMemo(() => {
+        const base = getConvexBaseUrlForOauthRedirect();
+        return base ? `${base}/api/auth/callback/upwork` : "Missing VITE_CONVEX_URL";
     }, []);
 
     useEffect(() => {
@@ -108,6 +117,11 @@ export function CredentialModal({ isOpen, service, orgId, departmentId, integrat
                 ? savedPowersRaw.filter((value: unknown): value is GmailOAuthPower => isGmailPower(value))
                 : [];
             setGmailPowers(savedPowers.length > 0 ? savedPowers : DEFAULT_GMAIL_POWERS);
+            return;
+        }
+        if (service === "upwork") {
+            setUpworkClientId(integration?.config?.clientId ?? "");
+            setUpworkClientSecret(integration?.config?.clientSecret ?? "");
             return;
         }
         if (service === "notion") {
@@ -152,9 +166,9 @@ export function CredentialModal({ isOpen, service, orgId, departmentId, integrat
         ? "bg-emerald-50 border-emerald-200 text-emerald-800"
         : "bg-slate-50 border-slate-200 text-slate-700";
 
-    const copyRedirectUrl = async () => {
+    const copyRedirectUrl = async (value: string) => {
         try {
-            await navigator.clipboard.writeText(redirectUrl);
+            await navigator.clipboard.writeText(value);
         } catch {
             window.alert("Unable to copy URL");
         }
@@ -188,7 +202,7 @@ export function CredentialModal({ isOpen, service, orgId, departmentId, integrat
             setError("Select at least one Gmail power.");
             return;
         }
-        if (!redirectUrl.startsWith("http")) {
+        if (!gmailRedirectUrl.startsWith("http")) {
             setError("VITE_CONVEX_URL is not configured.");
             return;
         }
@@ -205,8 +219,8 @@ export function CredentialModal({ isOpen, service, orgId, departmentId, integrat
                     clientSecret: clientSecret.trim(),
                     // Persist callback URL and power selection used in OAuth.
                     // IMPORTANT: redirectUrl uses .convex.site when VITE_CONVEX_URL is .convex.cloud
-                    redirectUri: redirectUrl,
-                    redirectUrl,
+                    redirectUri: gmailRedirectUrl,
+                    redirectUrl: gmailRedirectUrl,
                     powers: gmailPowers,
                     refreshToken: integration?.config?.refreshToken ?? "",
                     accessToken: integration?.config?.accessToken ?? "",
@@ -225,6 +239,56 @@ export function CredentialModal({ isOpen, service, orgId, departmentId, integrat
             if (!authUrl) throw new Error("Failed to generate Google auth URL.");
 
             const popup = window.open(authUrl, "gmail-oauth", "width=560,height=720");
+            if (!popup) window.location.href = authUrl;
+        } catch (err: unknown) {
+            if (openUpgradeModalFromError(err)) return;
+            const message = err instanceof Error ? err.message : "OAuth initiation failed.";
+            setError(message ?? "OAuth initiation failed.");
+        } finally {
+            setIsSubmitting(false);
+        }
+    };
+
+    const handleUpworkSignIn = async () => {
+        setError(null);
+        if (!upworkClientId.trim() || !upworkClientSecret.trim()) {
+            setError("Client ID and Client Secret are required.");
+            return;
+        }
+        if (!upworkRedirectUrl.startsWith("http")) {
+            setError("VITE_CONVEX_URL is not configured.");
+            return;
+        }
+
+        setIsSubmitting(true);
+        try {
+            await upsertIntegration({
+                orgId,
+                departmentId,
+                name: "Upwork OAuth2",
+                type: "upwork",
+                config: {
+                    clientId: upworkClientId.trim(),
+                    clientSecret: upworkClientSecret.trim(),
+                    redirectUri: upworkRedirectUrl,
+                    redirectUrl: upworkRedirectUrl,
+                    scopes: ["viewer", "jobs"],
+                    refreshToken: integration?.config?.refreshToken ?? "",
+                    accessToken: integration?.config?.accessToken ?? "",
+                },
+                authType: "oauth2",
+                oauthStatus: "pending",
+                lastError: "",
+            } as any);
+
+            const response = await generateUpworkAuthUrl({
+                orgId,
+                departmentId,
+            } as any);
+            const authUrl = response?.url as string | undefined;
+            if (!authUrl) throw new Error("Failed to generate Upwork auth URL.");
+
+            const popup = window.open(authUrl, "upwork-oauth", "width=560,height=720");
             if (!popup) window.location.href = authUrl;
         } catch (err: unknown) {
             if (openUpgradeModalFromError(err)) return;
@@ -370,12 +434,12 @@ export function CredentialModal({ isOpen, service, orgId, departmentId, integrat
                                         <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Redirect URL</label>
                                         <div className="flex gap-2">
                                             <input
-                                                value={redirectUrl}
+                                                value={gmailRedirectUrl}
                                                 readOnly
                                                 className="flex-1 rounded-xl border border-border-subtle bg-slate-50 px-3 py-2 text-xs font-mono text-slate-700"
                                             />
                                             <button
-                                                onClick={copyRedirectUrl}
+                                                onClick={() => copyRedirectUrl(gmailRedirectUrl)}
                                                 className="px-3 py-2 rounded-xl border border-border-subtle text-xs font-semibold hover:bg-black/5"
                                             >
                                                 Copy
@@ -420,6 +484,65 @@ export function CredentialModal({ isOpen, service, orgId, departmentId, integrat
                                         className="w-full rounded-xl bg-[#1a73e8] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#1768d1] disabled:opacity-50"
                                     >
                                         {isSubmitting ? "Connecting..." : "Sign in with Google"}
+                                    </button>
+                                </>
+                            )}
+
+                            {service === "upwork" && (
+                                <>
+                                    <div className={`rounded-xl border px-3 py-2 text-sm font-medium ${statusClass}`}>
+                                        {isConnected ? "🟢 " : "⚪ "} {statusLabel}
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Client ID</label>
+                                        <input
+                                            value={upworkClientId}
+                                            onChange={(e) => setUpworkClientId(e.target.value)}
+                                            placeholder="Upwork client id"
+                                            className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#14a800]/30"
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Client Secret</label>
+                                        <input
+                                            type="password"
+                                            value={upworkClientSecret}
+                                            onChange={(e) => setUpworkClientSecret(e.target.value)}
+                                            placeholder="Upwork client secret"
+                                            className="w-full rounded-xl border border-border-subtle px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#14a800]/30"
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[11px] uppercase tracking-wider font-semibold text-text-secondary">Redirect URL</label>
+                                        <div className="flex gap-2">
+                                            <input
+                                                value={upworkRedirectUrl}
+                                                readOnly
+                                                className="flex-1 rounded-xl border border-border-subtle bg-slate-50 px-3 py-2 text-xs font-mono text-slate-700"
+                                            />
+                                            <button
+                                                onClick={() => copyRedirectUrl(upworkRedirectUrl)}
+                                                className="px-3 py-2 rounded-xl border border-border-subtle text-xs font-semibold hover:bg-black/5"
+                                            >
+                                                Copy
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+                                        Required Upwork scopes: <span className="font-semibold">viewer</span>,{" "}
+                                        <span className="font-semibold">jobs</span>.
+                                    </div>
+                                    {integration?.lastError && (
+                                        <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                                            {integration.lastError}
+                                        </div>
+                                    )}
+                                    <button
+                                        onClick={handleUpworkSignIn}
+                                        disabled={isSubmitting}
+                                        className="w-full rounded-xl bg-[#14a800] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#128f00] disabled:opacity-50"
+                                    >
+                                        {isSubmitting ? "Connecting..." : "Connect with Upwork"}
                                     </button>
                                 </>
                             )}

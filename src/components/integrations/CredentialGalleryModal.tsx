@@ -7,6 +7,7 @@ const SERVICES = [
     { value: "github", label: "GitHub" },
     { value: "notion", label: "Notion" },
     { value: "twitter", label: "Twitter / X" },
+    { value: "upwork", label: "Upwork" },
     { value: "tavily", label: "Tavily" },
     { value: "resend", label: "Resend" },
 ] as const;

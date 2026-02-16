@@ -454,6 +454,7 @@ export default defineSchema({
       v.literal("github"),
       v.literal("notion"),
       v.literal("twitter"),
+      v.literal("upwork"),
       v.literal("dalle")
     ),
     config: v.any(), // Encrypted or sensitive fields usually go here

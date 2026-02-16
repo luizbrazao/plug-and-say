@@ -394,6 +394,8 @@ async function executeTool(
         get_email_details: ["gmail_get_message"],
         gmail_get_message: ["get_email_details"],
         search_emails: ["gmail_list_inbox", "list_emails"],
+        search_upwork_jobs: ["upwork_search_jobs"],
+        upwork_search_jobs: ["search_upwork_jobs"],
     };
     const aliasMatches =
         permissionAliases[toolCall.name]?.some((alias) => allowedTools?.includes(alias)) ?? false;
@@ -495,6 +497,30 @@ async function executeTool(
         }
 
         return await ctx.runAction((internal as any).tools.gmail.search_emails, {
+            departmentId,
+            query,
+            limit,
+        });
+    }
+
+    if (toolCall.name === "search_upwork_jobs") {
+        const query =
+            typeof toolCall.args.query === "string"
+                ? toolCall.args.query
+                : typeof toolCall.args.q === "string"
+                    ? toolCall.args.q
+                    : "";
+        const limit =
+            typeof toolCall.args.limit === "number" && Number.isFinite(toolCall.args.limit)
+                ? toolCall.args.limit
+                : typeof toolCall.args.maxResults === "number" && Number.isFinite(toolCall.args.maxResults)
+                    ? toolCall.args.maxResults
+                    : undefined;
+        if (!query.trim()) {
+            throw new Error("Tool 'search_upwork_jobs' requires a non-empty 'query'.");
+        }
+
+        return await ctx.runAction((internal as any).tools.upwork.searchJobs, {
             departmentId,
             query,
             limit,

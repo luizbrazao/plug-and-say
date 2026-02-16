@@ -38,6 +38,7 @@ export type PlanIntegrationType =
   | "github"
   | "notion"
   | "twitter"
+  | "upwork"
   | "dalle";
 
 function normalizePlan(plan: string | undefined): PlanName {
@@ -57,6 +58,8 @@ function featureLabel(type: PlanIntegrationType): string {
       return "Gmail";
     case "twitter":
       return "Twitter";
+    case "upwork":
+      return "Upwork";
     case "telegram":
       return "Telegram";
     case "openai":

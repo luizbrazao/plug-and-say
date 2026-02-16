@@ -22,6 +22,7 @@ interface CreateAgentModalProps {
 
 const AVAILABLE_TOOLS = [
     { id: "web_search", label: "Web Search (Tavily)" },
+    { id: "search_upwork_jobs", label: "Upwork Search" },
     { id: "send_email", label: "Send Email (Resend)" },
     { id: "search_knowledge", label: "Search Knowledge (Vector Memory)" },
     { id: "generate_image", label: "Generate Image (DALL-E)" },

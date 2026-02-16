@@ -4,6 +4,7 @@ import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { auth } from "./auth";
 import { callback as gmailOAuthCallback } from "./tools/gmailOAuth";
+import { callback as upworkOAuthCallback } from "./tools/upworkOAuth";
 import { webhook as stripeWebhook } from "./stripe";
 
 const http = httpRouter();
@@ -48,6 +49,13 @@ http.route({
     path: "/oauth/gmail/callback",
     method: "GET",
     handler: gmailOAuthCallback,
+});
+
+// ✅ Upwork OAuth callback
+http.route({
+    path: "/api/auth/callback/upwork",
+    method: "GET",
+    handler: upworkOAuthCallback,
 });
 
 http.route({
